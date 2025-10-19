@@ -1,0 +1,839 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Smart File Transfer - WebSocket Test</title>
+    <style>
+        body { font-family: Arial, sans-serif; margin: 20px; }
+        #messages { 
+            border: 1px solid #ccc; 
+            height: 400px; 
+            overflow-y: scroll; 
+            padding: 10px; 
+            background-color: #f9f9f9;
+            margin: 20px 0;
+        }
+        .message { 
+            margin: 5px 0; 
+            padding: 5px; 
+            border-radius: 3px;
+        }
+        .connected { background-color: #d4edda; }
+        .chunk_started { background-color: #fff3cd; }
+        .chunk_completed { background-color: #d1ecf1; }
+        .chunk_failed { background-color: #f8d7da; }
+        .upload_started { background-color: #e2e3e5; }
+        .merging_started { background-color: #ffeaa7; }
+        .completed { background-color: #d4edda; }
+        .error { background-color: #f8d7da; }
+        .heartbeat { background-color: #e9ecef; font-size: 12px; }
+        button { padding: 10px 20px; margin: 5px; }
+        input { padding: 8px; margin: 5px; width: 300px; }
+        
+        /* Real File Upload Styles */
+        .upload-section {
+            border: 2px dashed #ccc;
+            border-radius: 10px;
+            padding: 20px;
+            margin: 20px 0;
+            background-color: #fafafa;
+        }
+        .file-info {
+            background-color: #e9ecef;
+            padding: 15px;
+            border-radius: 5px;
+            margin: 10px 0;
+        }
+        .progress-bar {
+            width: 100%;
+            height: 30px;
+            background-color: #e0e0e0;
+            border-radius: 15px;
+            overflow: hidden;
+            margin: 10px 0;
+        }
+        .progress-fill {
+            height: 100%;
+            background: linear-gradient(90deg, #4CAF50, #45a049);
+            color: white;
+            text-align: center;
+            line-height: 30px;
+            font-weight: bold;
+            transition: width 0.3s ease;
+            width: 0%;
+        }
+        .chunk-info {
+            font-size: 14px;
+            color: #666;
+            margin: 10px 0;
+        }
+    </style>
+</head>
+<body>
+    <h1>Smart File Transfer - WebSocket Test</h1>
+    
+    <div>
+        <input type="text" id="fileId" placeholder="Enter file ID (e.g., test-123)" value="test-websocket-123">
+        <button onclick="connectWebSocket()">Connect WebSocket</button>
+        <button onclick="disconnectWebSocket()">Disconnect</button>
+        <button onclick="clearMessages()">Clear Messages</button>
+    </div>
+    
+    <div id="status">Status: Disconnected</div>
+    
+    <!-- Real File Upload Section -->
+    <div class="upload-section">
+        <h3>Real File Upload Test</h3>
+        <input type="file" id="fileInput" onchange="handleFileSelect()" />
+        <div class="file-info" id="fileInfo" style="display: none;"></div>
+        
+        <div>
+            <label>Chunk Size:</label>
+            <select id="chunkSize">
+                <option value="262144">256 KB (Slow Network)</option>
+                <option value="524288">512 KB (Normal)</option>
+                <option value="1048576" selected>1 MB (Fast Network)</option>
+                <option value="2097152">2 MB (Very Fast)</option>
+            </select>
+        </div>
+        
+        <div class="progress-bar">
+            <div class="progress-fill" id="progressFill">0%</div>
+        </div>
+        <div class="chunk-info" id="chunkInfo">No file selected</div>
+        
+        <button onclick="startRealUpload()" id="uploadBtn" disabled>Start Upload</button>
+        <button onclick="pauseUpload()" id="pauseBtn" disabled>Pause</button>
+        <button onclick="resumeUpload()" id="resumeBtn" disabled>Resume</button>
+        <button onclick="cancelUpload()" id="cancelBtn" disabled>Cancel</button>
+        <button onclick="downloadUploadedFile()" id="downloadBtn" disabled style="background-color: #28a745; color: white;">Download Uploaded File</button>
+    </div>
+    
+    <!-- Hash Verification Section -->
+    <div class="upload-section" id="hashSection" style="display: none;">
+        <h3>File Integrity Verification</h3>
+        <div id="hashComparison" class="file-info">
+            <p><strong>Original File Hash:</strong> <span id="originalHash">-</span></p>
+            <p><strong>Merged File Hash:</strong> <span id="mergedHash">-</span></p>
+            <p><strong>Integrity Status:</strong> <span id="integrityStatus">-</span></p>
+        </div>
+    </div>
+    
+    <div id="messages"></div>
+    
+    <div>
+        <h3>Test Actions:</h3>
+        <button onclick="sendPing()">Send Ping</button>
+        <button onclick="simulateUpload()">Simulate Upload Progress</button>
+    </div>
+
+    <script>
+        let ws = null;
+        let currentFileId = null;
+        
+        // File upload variables
+        let selectedFile = null;
+        let uploadedFilePath = null;
+        let uploadState = {
+            isUploading: false,
+            isPaused: false,
+            currentChunk: 0,
+            totalChunks: 0,
+            chunkSize: 1048576, // 1MB default
+            uploadedBytes: 0,
+            totalBytes: 0,
+            originalHash: null
+        };
+
+        function updateStatus(status) {
+            document.getElementById('status').textContent = `Status: ${status}`;
+        }
+
+        function addMessage(type, data) {
+            const messages = document.getElementById('messages');
+            const div = document.createElement('div');
+            div.className = `message ${type}`;
+            
+            const timestamp = new Date(data.timestamp || new Date()).toISOString();
+            const content = JSON.stringify(data, null, 2);
+            
+            div.innerHTML = `
+                <strong>[${timestamp}] ${type.toUpperCase()}:</strong><br>
+                <pre>${content}</pre>
+            `;
+            
+            messages.appendChild(div);
+            messages.scrollTop = messages.scrollHeight;
+        }
+
+        function connectWebSocket() {
+            const fileId = document.getElementById('fileId').value;
+            if (!fileId) {
+                alert('Please enter a file ID');
+                return;
+            }
+
+            if (ws) {
+                ws.close();
+            }
+
+            currentFileId = fileId;
+            const wsUrl = `ws://localhost:8000/ws/upload/${fileId}`;
+            
+            updateStatus('Connecting...');
+            
+            ws = new WebSocket(wsUrl);
+            
+            ws.onopen = function() {
+                updateStatus(`Connected to ${fileId}`);
+                console.log('WebSocket connected');
+            };
+            
+            ws.onmessage = function(event) {
+                try {
+                    const data = JSON.parse(event.data);
+                    addMessage(data.type || 'message', data);
+                    
+                    // Update status based on message type
+                    if (data.type === 'chunk_completed' && data.progress) {
+                        updateStatus(`Connected - Progress: ${data.progress.toFixed(1)}%`);
+                    }
+                } catch (e) {
+                    addMessage('error', { message: 'Failed to parse message', raw: event.data });
+                }
+            };
+            
+            ws.onclose = function() {
+                updateStatus('Disconnected');
+                console.log('WebSocket disconnected');
+            };
+            
+            ws.onerror = function(error) {
+                updateStatus('Error');
+                addMessage('error', { message: 'WebSocket error', error: error.toString() });
+                console.error('WebSocket error:', error);
+            };
+        }
+
+        function disconnectWebSocket() {
+            if (ws) {
+                ws.close();
+                ws = null;
+                updateStatus('Disconnected');
+            }
+        }
+
+        function clearMessages() {
+            document.getElementById('messages').innerHTML = '';
+        }
+
+        function sendPing() {
+            if (ws && ws.readyState === WebSocket.OPEN) {
+                ws.send(JSON.stringify({ type: 'ping' }));
+                console.log('Ping sent');
+            } else {
+                alert('WebSocket is not connected');
+            }
+        }
+
+        function simulateUpload() {
+            if (!ws || ws.readyState !== WebSocket.OPEN) {
+                alert('WebSocket is not connected');
+                return;
+            }
+
+            // Simulate a series of upload events
+            const events = [
+                { type: 'upload_started', filename: 'test-file.pdf', total_chunks: 5, file_size: 5120000 },
+                { type: 'chunk_started', chunk_number: 0, chunk_size: 1048576 },
+                { type: 'chunk_completed', chunk_number: 0, uploaded_chunks: 1, total_chunks: 5, progress: 20 },
+                { type: 'chunk_started', chunk_number: 1, chunk_size: 1048576 },
+                { type: 'chunk_completed', chunk_number: 1, uploaded_chunks: 2, total_chunks: 5, progress: 40 },
+                { type: 'chunk_started', chunk_number: 2, chunk_size: 1048576 },
+                { type: 'chunk_completed', chunk_number: 2, uploaded_chunks: 3, total_chunks: 5, progress: 60 },
+                { type: 'chunk_started', chunk_number: 3, chunk_size: 1048576 },
+                { type: 'chunk_completed', chunk_number: 3, uploaded_chunks: 4, total_chunks: 5, progress: 80 },
+                { type: 'chunk_started', chunk_number: 4, chunk_size: 1048576 },
+                { type: 'chunk_completed', chunk_number: 4, uploaded_chunks: 5, total_chunks: 5, progress: 100 },
+                { type: 'merging_started', message: 'Merging chunks into final file...' },
+                { type: 'completed', message: 'Upload completed successfully', file_path: '/uploaded_files/test-file.pdf' }
+            ];
+
+            let delay = 0;
+            events.forEach((event, index) => {
+                setTimeout(() => {
+                    addMessage(event.type, { ...event, timestamp: new Date().toISOString() });
+                    if (event.progress) {
+                        updateStatus(`Connected - Progress: ${event.progress}%`);
+                    }
+                }, delay);
+                delay += 1000; // 1 second between events
+            });
+        }
+
+        // File upload functions
+        async function handleFileSelect() {
+            const fileInput = document.getElementById('fileInput');
+            const file = fileInput.files[0];
+            
+            if (!file) {
+                document.getElementById('fileInfo').style.display = 'none';
+                document.getElementById('uploadBtn').disabled = true;
+                return;
+            }
+
+            selectedFile = file;
+            uploadState.chunkSize = parseInt(document.getElementById('chunkSize').value);
+            uploadState.totalBytes = file.size;
+            uploadState.totalChunks = Math.ceil(file.size / uploadState.chunkSize);
+            
+            // Calculate file hash
+            addMessage('info', { message: 'Calculating file hash...', timestamp: new Date().toISOString() });
+            uploadState.originalHash = await calculateFileHash(file);
+            
+            // Display file info
+            const fileInfo = document.getElementById('fileInfo');
+            fileInfo.innerHTML = `
+                <h4>Selected File:</h4>
+                <p><strong>Name:</strong> ${file.name}</p>
+                <p><strong>Size:</strong> ${formatBytes(file.size)}</p>
+                <p><strong>Type:</strong> ${file.type || 'Unknown'}</p>
+                <p><strong>Hash:</strong> ${uploadState.originalHash}</p>
+                <p><strong>Chunks:</strong> ${uploadState.totalChunks} (${formatBytes(uploadState.chunkSize)} each)</p>
+            `;
+            fileInfo.style.display = 'block';
+            
+            // Update chunk info
+            document.getElementById('chunkInfo').textContent = 
+                `Ready to upload ${uploadState.totalChunks} chunks of ${formatBytes(uploadState.chunkSize)}`;
+            
+            document.getElementById('uploadBtn').disabled = false;
+            addMessage('info', { 
+                message: 'File selected and analyzed', 
+                filename: file.name, 
+                size: file.size, 
+                hash: uploadState.originalHash, 
+                timestamp: new Date().toISOString() 
+            });
+        }
+
+        async function calculateFileHash(file) {
+            const arrayBuffer = await file.arrayBuffer();
+            const hashBuffer = await crypto.subtle.digest('SHA-256', arrayBuffer);
+            const hashArray = Array.from(new Uint8Array(hashBuffer));
+            return hashArray.map(b => b.toString(16).padStart(2, '0')).join('');
+        }
+
+        async function calculateChunkHash(chunk) {
+            const arrayBuffer = await chunk.arrayBuffer();
+            const hashBuffer = await crypto.subtle.digest('SHA-256', arrayBuffer);
+            const hashArray = Array.from(new Uint8Array(hashBuffer));
+            return hashArray.map(b => b.toString(16).padStart(2, '0')).join('');
+        }
+
+        function formatBytes(bytes) {
+            if (bytes === 0) return '0 Bytes';
+            const k = 1024;
+            const sizes = ['Bytes', 'KB', 'MB', 'GB'];
+            const i = Math.floor(Math.log(bytes) / Math.log(k));
+            return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + ' ' + sizes[i];
+        }
+
+        async function startRealUpload() {
+            if (!selectedFile) {
+                alert('Please select a file first');
+                return;
+            }
+
+            if (!ws || ws.readyState !== WebSocket.OPEN) {
+                alert('Please connect WebSocket first');
+                return;
+            }
+
+            // Reset upload state
+            uploadState.isUploading = true;
+            uploadState.isPaused = false;
+            uploadState.currentChunk = 0;
+            uploadState.uploadedBytes = 0;
+            
+            // Generate unique file ID for this upload (more entropy)
+            const uploadFileId = `upload-${Date.now()}-${Math.random().toString(36).substr(2, 9)}-${Math.floor(Math.random() * 10000)}`;
+            
+            // Clean up any previous upload state
+            if (currentFileId && currentFileId !== uploadFileId) {
+                try {
+                    await fetch(`http://localhost:8000/upload/cancel/${currentFileId}`, {
+                        method: 'DELETE'
+                    });
+                } catch (e) {
+                    console.log('Previous session cleanup failed:', e);
+                }
+            }
+            
+            // Update UI
+            document.getElementById('uploadBtn').disabled = true;
+            document.getElementById('pauseBtn').disabled = false;
+            document.getElementById('cancelBtn').disabled = false;
+
+            // Start upload using the existing backend API
+            try {
+                let retryCount = 0;
+                let result = null;
+                
+                while (retryCount < 3) {
+                    try {
+                        const formData = new FormData();
+                        formData.append('file_id', uploadFileId);
+                        formData.append('filename', selectedFile.name);
+                        formData.append('total_chunks', uploadState.totalChunks.toString());
+                        formData.append('file_size', uploadState.totalBytes.toString());
+                        formData.append('file_hash', uploadState.originalHash);
+
+                        console.log('Starting upload with:', {
+                            file_id: uploadFileId,
+                            filename: selectedFile.name,
+                            total_chunks: uploadState.totalChunks,
+                            file_size: uploadState.totalBytes,
+                            hash: uploadState.originalHash
+                        });
+
+                        const response = await fetch('http://localhost:8000/upload/start', {
+                            method: 'POST',
+                            body: formData
+                        });
+
+                        if (!response.ok) {
+                            const errorData = await response.json();
+                            
+                            // If it's a network monitor error or duplicate key error, retry with new ID
+                            if (errorData.detail && 
+                                (errorData.detail.includes('mean requires at least one data point') || 
+                                 errorData.detail.includes('already exists') ||
+                                 errorData.detail.includes('duplicate key'))) {
+                                retryCount++;
+                                if (retryCount < 3) {
+                                    // Generate new file ID for retry
+                                    uploadFileId = `upload-${Date.now()}-${Math.random().toString(36).substr(2, 9)}-${Math.floor(Math.random() * 10000)}`;
+                                    addMessage('info', { 
+                                        message: `Retrying with new session ID in ${retryCount} seconds...`, 
+                                        timestamp: new Date().toISOString() 
+                                    });
+                                    await new Promise(resolve => setTimeout(resolve, retryCount * 1000));
+                                    continue;
+                                }
+                            }
+                            
+                            throw new Error(errorData.detail || errorData.message || `HTTP ${response.status}`);
+                        }
+
+                        result = await response.json();
+                        break; // Success, exit retry loop
+                        
+                    } catch (error) {
+                        if (retryCount === 2) throw error; // Last retry
+                        retryCount++;
+                        await new Promise(resolve => setTimeout(resolve, retryCount * 1000));
+                    }
+                }
+
+                addMessage('upload_started', { 
+                    file_id: uploadFileId,
+                    filename: selectedFile.name, 
+                    total_chunks: uploadState.totalChunks,
+                    timestamp: new Date().toISOString() 
+                });
+
+                // Store file ID and start uploading chunks
+                currentFileId = uploadFileId;
+                await uploadNextChunk();
+
+            } catch (error) {
+                let errorMessage = error.message;
+                
+                // Handle network errors
+                if (error.name === 'TypeError' && error.message.includes('fetch')) {
+                    errorMessage = 'Network error - check if backend server is running';
+                }
+                
+                addMessage('error', { 
+                    message: 'Failed to start upload', 
+                    error: errorMessage, 
+                    timestamp: new Date().toISOString() 
+                });
+                resetUploadUI();
+            }
+        }
+
+        async function uploadNextChunk() {
+            if (!uploadState.isUploading || uploadState.isPaused || uploadState.currentChunk >= uploadState.totalChunks) {
+                return;
+            }
+
+            const chunkNumber = uploadState.currentChunk;
+            const start = chunkNumber * uploadState.chunkSize;
+            const end = Math.min(start + uploadState.chunkSize, uploadState.totalBytes);
+            const chunk = selectedFile.slice(start, end);
+
+            try {
+                // Calculate chunk hash
+                const chunkHash = await calculateChunkHash(chunk);
+                
+                addMessage('chunk_started', { 
+                    chunk_number: chunkNumber, 
+                    chunk_size: chunk.size,
+                    timestamp: new Date().toISOString() 
+                });
+
+                // Create form data
+                const formData = new FormData();
+                formData.append('file_id', currentFileId);
+                formData.append('chunk_number', chunkNumber.toString());
+                formData.append('total_chunks', uploadState.totalChunks.toString());
+                formData.append('chunk_hash', chunkHash);
+                formData.append('chunk', chunk);
+
+                // Upload chunk using existing API
+                const response = await fetch('http://localhost:8000/upload/chunk', {
+                    method: 'POST',
+                    body: formData
+                });
+
+                // Debug: Log response details
+                console.log('Chunk upload response:', {
+                    status: response.status,
+                    statusText: response.statusText,
+                    ok: response.ok
+                });
+
+                if (!response.ok) {
+                    let errorData;
+                    try {
+                        errorData = await response.json();
+                    } catch (parseError) {
+                        throw new Error(`HTTP ${response.status} - ${response.statusText} (Failed to parse error response)`);
+                    }
+                    
+                    const errorMessage = errorData.detail || errorData.message || `HTTP ${response.status} - ${response.statusText}`;
+                    console.log('Chunk upload error:', errorData);
+                    throw new Error(errorMessage);
+                }
+
+                const result = await response.json();
+
+                // Update progress
+                uploadState.currentChunk++;
+                uploadState.uploadedBytes += chunk.size;
+                const progress = (uploadState.uploadedBytes / uploadState.totalBytes) * 100;
+
+                updateProgressBar(progress);
+                document.getElementById('chunkInfo').textContent = 
+                    `Uploaded ${uploadState.currentChunk}/${uploadState.totalChunks} chunks (${progress.toFixed(1)}%)`;
+
+                addMessage('chunk_completed', { 
+                    chunk_number: chunkNumber, 
+                    uploaded_chunks: uploadState.currentChunk, 
+                    total_chunks: uploadState.totalChunks,
+                    progress: progress,
+                    timestamp: new Date().toISOString() 
+                });
+
+                // Continue with next chunk or complete upload
+                if (uploadState.currentChunk < uploadState.totalChunks) {
+                    // Small delay to prevent overwhelming the server
+                    setTimeout(uploadNextChunk, 100);
+                } else {
+                    await completeUpload();
+                }
+
+            } catch (error) {
+                let errorMessage = 'Unknown error';
+                
+                // Handle different error types more thoroughly
+                if (error && error.message) {
+                    errorMessage = error.message;
+                } else if (error instanceof Response) {
+                    try {
+                        const errorData = await error.json();
+                        errorMessage = errorData.detail || errorData.message || `HTTP ${error.status}`;
+                    } catch {
+                        errorMessage = `HTTP ${error.status} - ${error.statusText}`;
+                    }
+                } else if (typeof error === 'object') {
+                    if (error.detail) {
+                        errorMessage = error.detail;
+                    } else if (error.toString && error.toString() !== '[object Object]') {
+                        errorMessage = error.toString();
+                    } else {
+                        errorMessage = JSON.stringify(error);
+                    }
+                } else {
+                    errorMessage = String(error);
+                }
+                
+                addMessage('chunk_failed', { 
+                    chunk_number: chunkNumber, 
+                    error: errorMessage,
+                    response_status: error instanceof Response ? error.status : 'N/A',
+                    timestamp: new Date().toISOString() 
+                });
+                
+                // Retry logic - retry after 2 seconds
+                setTimeout(() => uploadNextChunk(), 2000);
+            }
+        }
+
+        async function completeUpload() {
+            try {
+                addMessage('merging_started', { 
+                    message: 'Merging chunks and verifying integrity...', 
+                    timestamp: new Date().toISOString() 
+                });
+
+                const formData = new FormData();
+                formData.append('file_id', currentFileId);
+                formData.append('expected_hash', uploadState.originalHash);
+
+                const response = await fetch('http://localhost:8000/upload/complete', {
+                    method: 'POST',
+                    body: formData
+                });
+
+                const result = await response.json();
+
+                if (!response.ok) {
+                    throw new Error(result.detail || 'Failed to complete upload');
+                }
+
+                updateProgressBar(100);
+                
+                // Store uploaded file path for download
+                uploadedFilePath = result.file_path;
+                
+                // Display hash verification
+                displayHashVerification(uploadState.originalHash, result.merged_hash, result.integrity_verified);
+                
+                addMessage('completed', { 
+                    message: 'Upload completed successfully', 
+                    file_path: result.file_path,
+                    file_id: result.file_id,
+                    integrity_verified: result.integrity_verified,
+                    original_hash: uploadState.originalHash,
+                    merged_hash: result.merged_hash,
+                    timestamp: new Date().toISOString() 
+                });
+
+                // Enable download button
+                document.getElementById('downloadBtn').disabled = false;
+                
+                resetUploadUI();
+
+            } catch (error) {
+                let errorMessage = error.message;
+                
+                // Handle different error types
+                if (error instanceof Response) {
+                    try {
+                        const errorData = await error.json();
+                        errorMessage = errorData.detail || errorData.message || `HTTP ${error.status}`;
+                    } catch {
+                        errorMessage = `HTTP ${error.status} - ${error.statusText}`;
+                    }
+                }
+                
+                addMessage('error', { 
+                    message: 'Failed to complete upload', 
+                    error: errorMessage,
+                    timestamp: new Date().toISOString() 
+                });
+                resetUploadUI();
+            }
+        }
+
+        function updateProgressBar(percentage) {
+            const progressFill = document.getElementById('progressFill');
+            progressFill.style.width = `${percentage}%`;
+            progressFill.textContent = `${percentage.toFixed(1)}%`;
+        }
+
+        function pauseUpload() {
+            uploadState.isPaused = true;
+            document.getElementById('pauseBtn').disabled = true;
+            document.getElementById('resumeBtn').disabled = false;
+            addMessage('info', { message: 'Upload paused', timestamp: new Date().toISOString() });
+        }
+
+        function resumeUpload() {
+            uploadState.isPaused = false;
+            document.getElementById('pauseBtn').disabled = false;
+            document.getElementById('resumeBtn').disabled = true;
+            addMessage('info', { message: 'Upload resumed', timestamp: new Date().toISOString() });
+            uploadNextChunk();
+        }
+
+        async function cancelUpload() {
+            uploadState.isUploading = false;
+            uploadState.isPaused = false;
+            
+            // Clean up server session
+            if (currentFileId) {
+                try {
+                    await fetch(`http://localhost:8000/upload/cancel/${currentFileId}`, {
+                        method: 'DELETE'
+                    });
+                    addMessage('info', { 
+                        message: 'Upload cancelled and server session cleaned up', 
+                        timestamp: new Date().toISOString() 
+                    });
+                } catch (err) {
+                    console.error('Failed to cancel upload on server:', err);
+                    addMessage('info', { 
+                        message: 'Upload cancelled (server cleanup failed)', 
+                        timestamp: new Date().toISOString() 
+                    });
+                }
+                currentFileId = null;
+            } else {
+                addMessage('info', { message: 'Upload cancelled', timestamp: new Date().toISOString() });
+            }
+
+            resetUploadUI();
+        }
+
+        function resetUploadUI() {
+            uploadState.isUploading = false;
+            uploadState.isPaused = false;
+            
+            document.getElementById('uploadBtn').disabled = false;
+            document.getElementById('pauseBtn').disabled = true;
+            document.getElementById('resumeBtn').disabled = true;
+            document.getElementById('cancelBtn').disabled = true;
+            
+            updateProgressBar(0);
+            document.getElementById('chunkInfo').textContent = selectedFile ? 
+                `Ready to upload ${uploadState.totalChunks} chunks of ${formatBytes(uploadState.chunkSize)}` : 
+                'No file selected';
+        }
+
+        function displayHashVerification(originalHash, mergedHash, integrityVerified) {
+            const hashSection = document.getElementById('hashSection');
+            const originalHashSpan = document.getElementById('originalHash');
+            const mergedHashSpan = document.getElementById('mergedHash');
+            const integrityStatusSpan = document.getElementById('integrityStatus');
+            
+            originalHashSpan.textContent = originalHash || 'N/A';
+            mergedHashSpan.textContent = mergedHash || 'N/A';
+            
+            if (integrityVerified && originalHash === mergedHash) {
+                integrityStatusSpan.innerHTML = '<span style="color: green; font-weight: bold;"> VERIFIED - Hashes match</span>';
+            } else {
+                integrityStatusSpan.innerHTML = '<span style="color: red; font-weight: bold;"> FAILED - Hashes do not match</span>';
+            }
+            
+            hashSection.style.display = 'block';
+        }
+
+        async function downloadUploadedFile() {
+            if (!uploadedFilePath) {
+                alert('No file available for download');
+                return;
+            }
+
+            try {
+                // Extract filename from path (handle both relative and absolute paths)
+                let filename;
+                if (uploadedFilePath.includes('/')) {
+                    filename = uploadedFilePath.split('/').pop();
+                } else {
+                    filename = uploadedFilePath;
+                }
+                
+                addMessage('info', { 
+                    message: `Starting download of ${filename}...`, 
+                    file_path: uploadedFilePath,
+                    timestamp: new Date().toISOString() 
+                });
+
+                // Create download URL - encode the filename to handle special characters
+                const downloadUrl = `http://localhost:8000/upload/download/${encodeURIComponent(filename)}`;
+                
+                // Try to download using fetch first to check if file exists
+                const response = await fetch(downloadUrl);
+                
+                if (!response.ok) {
+                    const errorText = await response.text();
+                    throw new Error(`File not found or download failed: ${response.status} - ${errorText}`);
+                }
+
+                // Create temporary link and trigger download
+                const blob = await response.blob();
+                const url = window.URL.createObjectURL(blob);
+                const a = document.createElement('a');
+                a.href = url;
+                a.download = filename;
+                document.body.appendChild(a);
+                a.click();
+                document.body.removeChild(a);
+                window.URL.revokeObjectURL(url);
+
+                addMessage('info', { 
+                    message: `Download completed: ${filename}`, 
+                    timestamp: new Date().toISOString() 
+                });
+
+            } catch (error) {
+                addMessage('error', { 
+                    message: 'Download failed', 
+                    error: error.message,
+                    file_path: uploadedFilePath,
+                    timestamp: new Date().toISOString() 
+                });
+            }
+        }
+
+        // Cleanup function to clear any stale sessions
+        async function cleanupStaleSessions() {
+            // Clear any stored file ID from previous sessions
+            currentFileId = null;
+            uploadedFilePath = null;
+            
+            // Reset upload state
+            uploadState = {
+                isUploading: false,
+                isPaused: false,
+                currentChunk: 0,
+                totalChunks: 0,
+                chunkSize: 1048576,
+                uploadedBytes: 0,
+                totalBytes: 0,
+                originalHash: null
+            };
+            
+            // Reset UI
+            resetUploadUI();
+            
+            // Hide hash section and disable download button
+            document.getElementById('hashSection').style.display = 'none';
+            document.getElementById('downloadBtn').disabled = true;
+        }
+
+        // Warmup function to initialize network monitor
+        async function warmupNetworkMonitor() {
+            try {
+                // Make a small dummy request to initialize the network monitor
+                const response = await fetch('http://localhost:8000/health');
+                if (response.ok) {
+                    console.log('Network monitor warmed up successfully');
+                }
+            } catch (error) {
+                console.log('Network warmup failed:', error);
+            }
+        }
+
+        // Auto-connect on page load
+        window.onload = function() {
+            cleanupStaleSessions();
+            warmupNetworkMonitor();
+            // connectWebSocket();
+        };
+    </script>
+</body>
+</html>
