@@ -110,8 +110,9 @@
         }
         .message { 
             margin: 5px 0; 
-            padding: 5px; 
-            border-radius: 3px;
+            padding: 8px; 
+            border-radius: 4px;
+            border-left: 4px solid transparent;
         }
         .connected { background-color: #d4edda; }
         .chunk_started { background-color: #fff3cd; }
@@ -122,6 +123,23 @@
         .completed { background-color: #d4edda; }
         .error { background-color: #f8d7da; }
         .heartbeat { background-color: #e9ecef; font-size: 12px; }
+        
+        /* HTTP Request/Response Styles */
+        .http_request_start { background-color: #e3f2fd; border-left: 4px solid #2196f3; }
+        .http_response_success { background-color: #e8f5e8; border-left: 4px solid #4caf50; }
+        .http_response_error { background-color: #ffebee; border-left: 4px solid #f44336; }
+        .http_exception { background-color: #fff3e0; border-left: 4px solid #ff9800; }
+        
+        /* WebSocket Message Styles */
+        .ws_upload_started { background-color: #f3e5f5; border-left: 4px solid #9c27b0; }
+        .ws_chunk_started { background-color: #fff8e1; border-left: 4px solid #ffc107; }
+        .ws_chunk_completed { background-color: #fff3e0; border-left: 4px solid #ff9800; }
+        .ws_merging_started { background-color: #e1f5fe; border-left: 4px solid #03a9f4; }
+        .ws_progress_update { background-color: #f3e5f5; border-left: 4px solid #9c27b0; }
+        .ws_completion { background-color: #e0f2f1; border-left: 4px solid #009688; }
+        .ws_connected { background-color: #e8f5e8; border-left: 4px solid #4caf50; }
+        .ws_message { background-color: #fafafa; border-left: 4px solid #757575; }
+        .ws_parse_error { background-color: #ffebee; border-left: 4px solid #f44336; }
         button { padding: 10px 20px; margin: 5px; }
         input { padding: 8px; margin: 5px; width: 300px; }
         
@@ -201,6 +219,13 @@
             <button onclick="connectWebSocket()">Connect WebSocket</button>
             <button onclick="disconnectWebSocket()">Disconnect</button>
             <button onclick="clearMessages()">Clear Messages</button>
+        </div>
+        
+        <!-- WebSocket Connection Status Indicator -->
+        <div id="connectionStatus" style="margin: 10px 0; padding: 10px; border-radius: 4px; background: #f8f9fa; border: 1px solid #dee2e6;">
+            <strong>WebSocket Status:</strong> 
+            <span id="wsStatus">Disconnected</span>
+            <span id="wsIndicator" style="width: 12px; height: 12px; border-radius: 50%; display: inline-block; margin-left: 10px; background: #dc3545;"></span>
         </div>
         
         <div id="status">Status: Disconnected</div>
@@ -544,6 +569,28 @@
             document.getElementById('status').textContent = `Status: ${status}`;
         }
 
+        // Update WebSocket status indicator
+        function updateWebSocketStatus(status, color) {
+            document.getElementById('wsStatus').textContent = status;
+            document.getElementById('wsIndicator').style.background = color;
+        }
+
+        function getWebSocketMessageDescription(messageType) {
+            const descriptions = {
+                'connected': 'Connection established',
+                'upload_started': 'Upload session initiated',
+                'chunk_started': 'Chunk upload began',
+                'chunk_completed': 'Chunk upload finished',
+                'chunk_failed': 'Chunk upload failed',
+                'merging_started': 'File merging in progress',
+                'completed': 'Upload completed successfully',
+                'error': 'Error occurred',
+                'heartbeat': 'Connection heartbeat',
+                'progress': 'Progress update'
+            };
+            return descriptions[messageType] || 'Message received';
+        }
+
         function addMessage(type, data) {
             const messages = document.getElementById('messages');
             const div = document.createElement('div');
@@ -573,57 +620,172 @@
                 return;
             }
 
+            // Close existing connection
             if (ws) {
                 ws.close();
             }
 
             currentFileId = fileId;
-            // Include token as query parameter for WebSocket auth
-            const wsUrl = `ws://localhost:8000/ws/upload/${fileId}?token=${encodeURIComponent(authState.accessToken)}`;
             
-            updateStatus('Connecting...');
-            addMessage('info', { message: `Connecting to WebSocket: ${wsUrl}`, timestamp: new Date().toISOString() });
+            // Add connection retry logic
+            let connectionAttempts = 0;
+            const maxAttempts = 3;
             
-            ws = new WebSocket(wsUrl);
+            function attemptConnection() {
+                connectionAttempts++;
+                
+                // Add small delay before connection to ensure auth is ready
+                setTimeout(() => {
+                    const wsUrl = `ws://localhost:8000/ws/upload/${fileId}?token=${encodeURIComponent(authState.accessToken)}`;
+                    
+                    updateStatus(`Connecting... (attempt ${connectionAttempts}/${maxAttempts})`);
+                    updateWebSocketStatus('Connecting...', '#ffc107');
+                    addMessage('info', { 
+                        message: `Attempting WebSocket connection (${connectionAttempts}/${maxAttempts})`, 
+                        timestamp: new Date().toISOString() 
+                    });
+                    
+                    ws = new WebSocket(wsUrl);
+                    
+                    // Set connection timeout
+                    const connectionTimeout = setTimeout(() => {
+                        if (ws.readyState === WebSocket.CONNECTING) {
+                            ws.close();
+                            addMessage('warning', {
+                                message: 'WebSocket connection timeout',
+                                attempt: connectionAttempts,
+                                timestamp: new Date().toISOString()
+                            });
+                        }
+                    }, 5000); // 5 second timeout
             
-            ws.onopen = function() {
-                updateStatus(`Connected to ${fileId}`);
-                addMessage('connected', { message: 'WebSocket connected successfully', timestamp: new Date().toISOString() });
-            };
+                    ws.onopen = function() {
+                        clearTimeout(connectionTimeout);
+                        connectionAttempts = 0; // Reset on success
+                        updateStatus(`Connected to ${fileId}`);
+                        updateWebSocketStatus('Connected', '#28a745');
+                        addMessage('connected', { 
+                            message: 'WebSocket connected successfully', 
+                            timestamp: new Date().toISOString() 
+                        });
+                    };
+                    
+                    ws.onclose = function(event) {
+                        clearTimeout(connectionTimeout);
+                        updateStatus('Disconnected');
+                        updateWebSocketStatus('Disconnected', '#dc3545');
+                        
+                        let reason = event.reason || 'Unknown reason';
+                        
+                        // Handle different close codes
+                        if (event.code === 1006) {
+                            // Connection failed before opening
+                            if (connectionAttempts < maxAttempts) {
+                                addMessage('warning', {
+                                    message: `WebSocket connection failed, retrying in ${connectionAttempts} seconds...`,
+                                    code: event.code,
+                                    attempt: connectionAttempts,
+                                    max_attempts: maxAttempts,
+                                    timestamp: new Date().toISOString()
+                                });
+                                
+                                // Exponential backoff: 1s, 2s, 3s
+                                setTimeout(attemptConnection, connectionAttempts * 1000);
+                                return;
+                            } else {
+                                reason = 'Failed to connect after multiple attempts';
+                            }
+                        } else if (event.code === 4001 || event.code === 4003) {
+                            reason = 'Authentication failed - please login again';
+                            setTimeout(() => logout(), 2000);
+                        }
+                        
+                        addMessage('error', { 
+                            message: 'WebSocket disconnected', 
+                            code: event.code, 
+                            reason: reason,
+                            final_attempt: connectionAttempts >= maxAttempts,
+                            timestamp: new Date().toISOString() 
+                        });
+                    };
+                    
+                    ws.onerror = function(error) {
+                        clearTimeout(connectionTimeout);
+                        updateStatus('Error');
+                        
+                        // Only show error if this is the final attempt to avoid spam
+                        if (connectionAttempts >= maxAttempts) {
+                            addMessage('error', { 
+                                message: 'WebSocket error occurred', 
+                                error: error.toString(),
+                                attempt: connectionAttempts,
+                                timestamp: new Date().toISOString() 
+                            });
+                        }
+                    };
             
-            ws.onmessage = function(event) {
+                    ws.onmessage = function(event) {
                 try {
                     const data = JSON.parse(event.data);
+                    
+                    // Add WebSocket identifier to all messages
+                    const wsMessage = {
+                        ...data,
+                        transport: 'WebSocket',
+                        connection_type: 'Real-time bidirectional'
+                    };
+                    
+                    // Log with WebSocket prefix based on message type
+                    const messageType = `ws_${data.type || 'message'}`;
+                    addMessage(messageType, {
+                        message: `WebSocket: ${data.message || getWebSocketMessageDescription(data.type)}`,
+                        transport: 'WebSocket',
+                        ws_data: wsMessage,
+                        timestamp: new Date().toISOString()
+                    });
+                    
+                    // Also add the original message for backward compatibility
                     addMessage(data.type || 'message', data);
                     
-                    // Update status based on message type
+                    // Handle specific WebSocket message types
                     if (data.type === 'chunk_completed' && data.progress) {
                         updateStatus(`Connected - Progress: ${data.progress.toFixed(1)}%`);
+                        
+                        addMessage('ws_progress_update', {
+                            message: ` WebSocket: Progress update received`,
+                            progress: data.progress,
+                            uploaded_chunks: data.uploaded_chunks,
+                            total_chunks: data.total_chunks,
+                            transport: 'WebSocket',
+                            timestamp: new Date().toISOString()
+                        });
                     }
+                    
+                    if (data.type === 'upload_completed' || data.type === 'completed') {
+                        addMessage('ws_completion', {
+                            message: ` WebSocket: Upload completion notification`,
+                            transport: 'WebSocket',
+                            file_url: data.file_url || data.file_path,
+                            timestamp: new Date().toISOString()
+                        });
+                    }
+                    
                 } catch (e) {
-                    addMessage('error', { message: 'Failed to parse message', raw: event.data });
+                    addMessage('ws_parse_error', {
+                        message: ` WebSocket: Failed to parse message`,
+                        transport: 'WebSocket',
+                        raw_data: event.data,
+                        error: e.message,
+                        timestamp: new Date().toISOString()
+                    });
                 }
-            };
-            
-            ws.onclose = function(event) {
-                updateStatus('Disconnected');
-                let reason = event.reason || 'Unknown reason';
+                    };
                 
-                if (event.code === 4001) {
-                    reason = 'Authentication failed - please login again';
-                    addMessage('error', { message: 'WebSocket authentication failed', code: event.code, reason: reason });
-                    // Auto-logout on auth failure
-                    setTimeout(() => logout(), 2000);
-                } else {
-                    addMessage('info', { message: 'WebSocket disconnected', code: event.code, reason: reason });
-                }
-            };
+                }, connectionAttempts === 1 ? 500 : 0); // Small delay only on first attempt
+            }
             
-            ws.onerror = function(error) {
-                updateStatus('Error');
-                addMessage('error', { message: 'WebSocket error', error: error.toString(), timestamp: new Date().toISOString() });
-                console.error('WebSocket error:', error);
-            };
+            // Start the connection attempt
+            attemptConnection();
         }
 
         function disconnectWebSocket() {
@@ -631,6 +793,7 @@
                 ws.close();
                 ws = null;
                 updateStatus('Disconnected');
+                updateWebSocketStatus('Disconnected', '#dc3545');
             }
         }
 
@@ -784,6 +947,98 @@
             return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + ' ' + sizes[i];
         }
 
+        // Enhanced error message extraction function
+        function getDetailedErrorMessage(error) {
+            if (!error) return 'No error provided';
+            
+            // Handle Response objects
+            if (error instanceof Response) {
+                return `HTTP ${error.status}: ${error.statusText}`;
+            }
+            
+            // Handle Error objects - check if message is "[object Object]"
+            if (error instanceof Error) {
+                if (error.message === '[object Object]') {
+                    // Try to extract more meaningful info from the error
+                    try {
+                        // Look for common error properties
+                        if (error.cause) {
+                            return `${error.name}: ${getDetailedErrorMessage(error.cause)}`;
+                        }
+                        if (error.stack) {
+                            const stackLines = error.stack.split('\n');
+                            return `${error.name}: ${stackLines[0] || 'Unknown error'}`;
+                        }
+                        // Try to get properties from the error object
+                        const keys = Object.keys(error).filter(key => key !== 'message' && key !== 'name' && key !== 'stack');
+                        if (keys.length > 0) {
+                            const errorDetails = {};
+                            keys.slice(0, 3).forEach(key => {
+                                errorDetails[key] = error[key];
+                            });
+                            return `${error.name}: ${JSON.stringify(errorDetails)}`;
+                        }
+                        return `${error.name}: Error object with no readable message`;
+                    } catch (e) {
+                        return `${error.name}: Unable to extract error details`;
+                    }
+                } else {
+                    return `${error.name}: ${error.message}`;
+                }
+            }
+            
+            // Handle fetch API errors
+            if (error?.name === 'TypeError' && error?.message?.includes('fetch')) {
+                return 'Network error: Unable to connect to server';
+            }
+            
+            // Handle load/network failures
+            if (error?.name === 'TypeError' && error?.message?.includes('Load failed')) {
+                return 'Network error: Request failed to load (possible CORS or network issue)';
+            }
+            
+            // Handle objects with error properties
+            if (typeof error === 'object' && error !== null) {
+                if (error.detail) return error.detail;
+                if (error.message && error.message !== '[object Object]') return error.message;
+                if (error.error) return error.error;
+                
+                // Try to stringify safely
+                try {
+                    const keys = Object.keys(error);
+                    if (keys.length > 0) {
+                        const relevantKeys = keys.slice(0, 5); // Limit to first 5 keys
+                        const errorObj = {};
+                        relevantKeys.forEach(key => {
+                            try {
+                                const value = error[key];
+                                // Avoid circular references and objects that don't stringify well
+                                if (typeof value === 'string' || typeof value === 'number' || typeof value === 'boolean') {
+                                    errorObj[key] = value;
+                                } else if (value && typeof value === 'object') {
+                                    errorObj[key] = '[Object]';
+                                } else {
+                                    errorObj[key] = String(value);
+                                }
+                            } catch (e) {
+                                errorObj[key] = '[Unreadable]';
+                            }
+                        });
+                        return `Object error: ${JSON.stringify(errorObj)}`;
+                    }
+                } catch (e) {
+                    return `Error object with keys: ${Object.keys(error).join(', ')}`;
+                }
+            }
+            
+            // Last resort - try to convert to string
+            try {
+                return String(error);
+            } catch (e) {
+                return 'Unreadable error object';
+            }
+        }
+
         async function startRealUpload() {
             if (!authState.isLoggedIn) {
                 alert('Please login first');
@@ -898,18 +1153,17 @@
                 await uploadNextChunk();
 
             } catch (error) {
-                let errorMessage = error.message;
-                
-                // Handle network errors
-                if (error.name === 'TypeError' && error.message.includes('fetch')) {
-                    errorMessage = 'Network error - check if backend server is running';
-                }
+                // Use enhanced error message extraction
+                const errorMessage = getDetailedErrorMessage(error);
                 
                 addMessage('error', { 
                     message: 'Failed to start upload', 
-                    error: errorMessage, 
+                    error: errorMessage,
+                    error_type: error?.constructor?.name || typeof error, 
                     timestamp: new Date().toISOString() 
                 });
+                
+                console.error('Upload start error:', error);
                 resetUploadUI();
             }
         }
@@ -925,6 +1179,17 @@
             const chunk = selectedFile.slice(start, end);
 
             try {
+                // Log HTTP request start
+                addMessage('http_request_start', {
+                    message: ` HTTP POST: Starting chunk ${chunkNumber} upload`,
+                    chunk_number: chunkNumber,
+                    chunk_size: chunk.size,
+                    method: 'HTTP POST',
+                    endpoint: '/upload/chunk',
+                    transport: 'HTTP',
+                    timestamp: new Date().toISOString()
+                });
+
                 // Calculate chunk hash
                 const chunkHash = await calculateChunkHash(chunk);
                 
@@ -942,17 +1207,10 @@
                 formData.append('chunk_hash', chunkHash);
                 formData.append('chunk', chunk);
 
-                // Upload chunk using existing API
+                // Upload chunk using existing API (HTTP POST)
                 const response = await authenticatedFetch('http://localhost:8000/upload/chunk', {
                     method: 'POST',
                     body: formData
-                });
-
-                // Debug: Log response details
-                console.log('Chunk upload response:', {
-                    status: response.status,
-                    statusText: response.statusText,
-                    ok: response.ok
                 });
 
                 if (!response.ok) {
@@ -960,15 +1218,53 @@
                     try {
                         errorData = await response.json();
                     } catch (parseError) {
+                        // Log HTTP error without JSON response
+                        addMessage('http_response_error', {
+                            message: `HTTP POST: Chunk ${chunkNumber} upload failed`,
+                            chunk_number: chunkNumber,
+                            method: 'HTTP POST',
+                            status: response.status,
+                            status_text: response.statusText,
+                            error: `Failed to parse error response: ${parseError.message}`,
+                            transport: 'HTTP',
+                            timestamp: new Date().toISOString()
+                        });
                         throw new Error(`HTTP ${response.status} - ${response.statusText} (Failed to parse error response)`);
                     }
                     
+                    // Log HTTP error with JSON response
                     const errorMessage = errorData.detail || errorData.message || `HTTP ${response.status} - ${response.statusText}`;
+                    addMessage('http_response_error', {
+                        message: `HTTP POST: Chunk ${chunkNumber} upload failed`,
+                        chunk_number: chunkNumber,
+                        method: 'HTTP POST',
+                        status: response.status,
+                        status_text: response.statusText,
+                        error: errorMessage,
+                        error_data: errorData,
+                        transport: 'HTTP',
+                        timestamp: new Date().toISOString()
+                    });
+                    
                     console.log('Chunk upload error:', errorData);
-                    throw new Error(errorMessage);
+                    // Ensure we throw a string message, not an object
+                    const errorToThrow = typeof errorMessage === 'string' ? errorMessage : JSON.stringify(errorMessage);
+                    throw new Error(errorToThrow);
                 }
 
                 const result = await response.json();
+
+                // Log HTTP success response
+                addMessage('http_response_success', {
+                    message: ` HTTP POST: Chunk ${chunkNumber} uploaded successfully`,
+                    chunk_number: chunkNumber,
+                    method: 'HTTP POST',
+                    status: response.status,
+                    status_text: response.statusText,
+                    response_data: result,
+                    transport: 'HTTP',
+                    timestamp: new Date().toISOString()
+                });
 
                 // Update progress
                 uploadState.currentChunk++;
@@ -996,36 +1292,45 @@
                 }
 
             } catch (error) {
-                let errorMessage = 'Unknown error';
+                // Use enhanced error message extraction
+                const errorMessage = getDetailedErrorMessage(error);
                 
-                // Handle different error types more thoroughly
-                if (error && error.message) {
-                    errorMessage = error.message;
-                } else if (error instanceof Response) {
-                    try {
-                        const errorData = await error.json();
-                        errorMessage = errorData.detail || errorData.message || `HTTP ${error.status}`;
-                    } catch {
-                        errorMessage = `HTTP ${error.status} - ${error.statusText}`;
-                    }
-                } else if (typeof error === 'object') {
-                    if (error.detail) {
-                        errorMessage = error.detail;
-                    } else if (error.toString && error.toString() !== '[object Object]') {
-                        errorMessage = error.toString();
-                    } else {
-                        errorMessage = JSON.stringify(error);
-                    }
-                } else {
-                    errorMessage = String(error);
-                }
+                // Capture error details for debugging
+                const errorDetails = {
+                    name: error?.name,
+                    message: error?.message,
+                    stack: error?.stack?.split('\n').slice(0, 3), // First 3 lines of stack
+                    type: error?.constructor?.name,
+                    keys: typeof error === 'object' && error ? Object.keys(error) : [],
+                    is_response: error instanceof Response,
+                    is_error: error instanceof Error
+                };
+
+                // Log HTTP exception with better error info
+                addMessage('http_exception', {
+                    message: ` HTTP POST: Exception during chunk ${chunkNumber} upload`,
+                    chunk_number: chunkNumber,
+                    method: 'HTTP POST',
+                    endpoint: '/upload/chunk',
+                    error: errorMessage,
+                    error_details: errorDetails,
+                    error_type: error?.constructor?.name || typeof error,
+                    transport: 'HTTP',
+                    timestamp: new Date().toISOString()
+                });
                 
                 addMessage('chunk_failed', { 
                     chunk_number: chunkNumber, 
                     error: errorMessage,
+                    error_type: error?.constructor?.name || typeof error,
                     response_status: error instanceof Response ? error.status : 'N/A',
+                    retry_in_seconds: 2,
                     timestamp: new Date().toISOString() 
                 });
+                
+                // Log to console for debugging
+                console.error('Chunk upload error details:', error);
+                console.error('Processed error message:', errorMessage);
                 
                 // Retry logic - retry after 2 seconds
                 setTimeout(() => uploadNextChunk(), 2000);
@@ -1078,23 +1383,17 @@
                 resetUploadUI();
 
             } catch (error) {
-                let errorMessage = error.message;
-                
-                // Handle different error types
-                if (error instanceof Response) {
-                    try {
-                        const errorData = await error.json();
-                        errorMessage = errorData.detail || errorData.message || `HTTP ${error.status}`;
-                    } catch {
-                        errorMessage = `HTTP ${error.status} - ${error.statusText}`;
-                    }
-                }
+                // Use enhanced error message extraction
+                const errorMessage = getDetailedErrorMessage(error);
                 
                 addMessage('error', { 
                     message: 'Failed to complete upload', 
                     error: errorMessage,
+                    error_type: error?.constructor?.name || typeof error,
                     timestamp: new Date().toISOString() 
                 });
+                
+                console.error('Upload completion error:', error);
                 resetUploadUI();
             }
         }
