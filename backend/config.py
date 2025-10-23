@@ -11,6 +11,21 @@ class Settings:
     SUPABASE_URL: str = os.getenv("SUPABASE_URL", "")
     SUPABASE_KEY: str = os.getenv("SUPABASE_KEY", "")
     
+    # Authentication Settings
+    SECRET_KEY: str = os.getenv("SECRET_KEY", "your-super-secret-jwt-key-change-this-in-production")
+    ALGORITHM: str = "HS256"
+    ACCESS_TOKEN_EXPIRE_MINUTES: int = int(os.getenv("ACCESS_TOKEN_EXPIRE_MINUTES", "30"))
+    REFRESH_TOKEN_EXPIRE_DAYS: int = int(os.getenv("REFRESH_TOKEN_EXPIRE_DAYS", "7"))
+    
+    # Password Settings
+    MIN_PASSWORD_LENGTH: int = 8
+    MAX_PASSWORD_LENGTH: int = 128
+    REQUIRE_SPECIAL_CHARS: bool = True
+    
+    # Security Settings
+    MAX_LOGIN_ATTEMPTS: int = 5
+    LOGIN_ATTEMPT_TIMEOUT_MINUTES: int = 15
+    
     # File handling
     MAX_CHUNK_SIZE: int = int(os.getenv("MAX_CHUNK_SIZE", "2097152"))  # 2MB
     MIN_CHUNK_SIZE: int = int(os.getenv("MIN_CHUNK_SIZE", "262144"))   # 256KB

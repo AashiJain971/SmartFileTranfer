@@ -5,6 +5,7 @@ from contextlib import asynccontextmanager
 
 from routers import upload
 from routers import websocket  # Add WebSocket router
+from routers import auth  # Add auth router
 from services.chunk_service import chunk_service
 from db.crud import cleanup_failed_sessions
 from config import settings
@@ -67,6 +68,8 @@ app.add_middleware(
 # Include routers
 app.include_router(upload.router)
 app.include_router(websocket.router)  # Add WebSocket routes
+app.include_router(auth.router)  # Add authentication routes
+
 @app.get("/")
 async def root():
     return {

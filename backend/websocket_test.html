@@ -1,9 +1,105 @@
 <!DOCTYPE html>
 <html>
 <head>
-    <title>Smart File Transfer - WebSocket Test</title>
+    <title>Smart File Transfer - Complete Test Suite</title>
     <style>
-        body { font-family: Arial, sans-serif; margin: 20px; }
+        body { font-family: Arial, sans-serif; margin: 20px; background-color: #f5f5f5; }
+        
+        /* Authentication styles */
+        .auth-container {
+            max-width: 400px;
+            margin: 20px auto;
+            padding: 30px;
+            background: white;
+            border-radius: 10px;
+            box-shadow: 0 2px 10px rgba(0,0,0,0.1);
+        }
+        
+        .auth-form {
+            display: flex;
+            flex-direction: column;
+            gap: 15px;
+        }
+        
+        .auth-form input {
+            padding: 12px;
+            border: 1px solid #ddd;
+            border-radius: 5px;
+            font-size: 14px;
+        }
+        
+        .auth-form button {
+            padding: 12px;
+            background-color: #007bff;
+            color: white;
+            border: none;
+            border-radius: 5px;
+            font-size: 16px;
+            cursor: pointer;
+        }
+        
+        .auth-form button:hover {
+            background-color: #0056b3;
+        }
+        
+        .auth-form button:disabled {
+            background-color: #ccc;
+            cursor: not-allowed;
+        }
+        
+        .auth-toggle {
+            text-align: center;
+            margin-top: 15px;
+            color: #666;
+        }
+        
+        .auth-toggle a {
+            color: #007bff;
+            text-decoration: none;
+            cursor: pointer;
+        }
+        
+        .user-info {
+            background-color: #e7f3ff;
+            padding: 15px;
+            border-radius: 5px;
+            margin: 20px 0;
+        }
+        
+        .logout-btn {
+            background-color: #dc3545;
+            color: white;
+            border: none;
+            padding: 8px 16px;
+            border-radius: 4px;
+            cursor: pointer;
+            float: right;
+        }
+        
+        .main-content {
+            display: none;
+        }
+        
+        /* Error and success messages */
+        .error-message {
+            background-color: #f8d7da;
+            color: #721c24;
+            padding: 10px;
+            border-radius: 5px;
+            margin: 10px 0;
+            border: 1px solid #f5c6cb;
+        }
+        
+        .success-message {
+            background-color: #d4edda;
+            color: #155724;
+            padding: 10px;
+            border-radius: 5px;
+            margin: 10px 0;
+            border: 1px solid #c3e6cb;
+        }
+        
+        /* Original styles */
         #messages { 
             border: 1px solid #ccc; 
             height: 400px; 
@@ -69,16 +165,45 @@
     </style>
 </head>
 <body>
-    <h1>Smart File Transfer - WebSocket Test</h1>
+    <h1>Smart File Transfer - Complete Test Suite</h1>
     
-    <div>
-        <input type="text" id="fileId" placeholder="Enter file ID (e.g., test-123)" value="test-websocket-123">
-        <button onclick="connectWebSocket()">Connect WebSocket</button>
-        <button onclick="disconnectWebSocket()">Disconnect</button>
-        <button onclick="clearMessages()">Clear Messages</button>
+    <!-- Authentication Section -->
+    <div id="authSection" class="auth-container">
+        <h2 id="authTitle">Login</h2>
+        <form id="authForm" class="auth-form">
+            <div id="signupFields" style="display: none;">
+                <input type="text" id="username" name="username" placeholder="Username">
+            </div>
+            <input type="email" id="loginEmail" name="email" placeholder="Email" required>
+            <input type="password" id="password" name="password" placeholder="Password" required>
+            <button type="submit" id="authSubmitBtn">Login</button>
+        </form>
+        
+        <div class="auth-toggle">
+            <span id="authToggleText">Don't have an account?</span>
+            <a id="authToggleLink">Sign up</a>
+        </div>
+        
+        <div id="authMessage"></div>
     </div>
     
-    <div id="status">Status: Disconnected</div>
+    <!-- User Info Section -->
+    <div id="userInfo" class="user-info" style="display: none;">
+        <span id="userDetails"></span>
+        <button class="logout-btn" onclick="logout()">Logout</button>
+        <div style="clear: both;"></div>
+    </div>
+    
+    <!-- Main Content (shown after login) -->
+    <div id="mainContent" class="main-content">
+        <div>
+            <input type="text" id="fileId" placeholder="Enter file ID (e.g., test-123)" value="test-websocket-123">
+            <button onclick="connectWebSocket()">Connect WebSocket</button>
+            <button onclick="disconnectWebSocket()">Disconnect</button>
+            <button onclick="clearMessages()">Clear Messages</button>
+        </div>
+        
+        <div id="status">Status: Disconnected</div>
     
     <!-- Real File Upload Section -->
     <div class="upload-section">
@@ -127,6 +252,15 @@
     </div>
 
     <script>
+        // Authentication state
+        let authState = {
+            isLoggedIn: false,
+            user: null,
+            accessToken: null,
+            refreshToken: null
+        };
+        
+        // WebSocket and upload variables
         let ws = null;
         let currentFileId = null;
         
@@ -143,6 +277,268 @@
             totalBytes: 0,
             originalHash: null
         };
+
+        // Authentication functions
+        function initAuth() {
+            toggleAuthMode(false);
+            
+            // Check for existing token
+            const token = localStorage.getItem('accessToken');
+            const user = localStorage.getItem('user');
+            
+            if (token && user) {
+                authState.accessToken = token;
+                authState.refreshToken = localStorage.getItem('refreshToken');
+                authState.user = JSON.parse(user);
+                authState.isLoggedIn = true;
+                showMainContent();
+            }
+            
+            // Setup form handler
+            document.getElementById('authForm').addEventListener('submit', handleAuthSubmit);
+            document.getElementById('authToggleLink').addEventListener('click', toggleAuthMode);
+        }
+        
+        function toggleAuthMode() {
+            const signupFields = document.getElementById('signupFields');
+            const usernameField = document.getElementById('username');
+            const title = document.getElementById('authTitle');
+            const submitBtn = document.getElementById('authSubmitBtn');
+            const toggleText = document.getElementById('authToggleText');
+            const toggleLink = document.getElementById('authToggleLink');
+            
+            const isSignup = signupFields.style.display === 'none';
+            
+            if (isSignup) {
+                // Switch to signup mode
+                signupFields.style.display = 'block';
+                usernameField.setAttribute('required', 'required');
+                title.textContent = 'Sign Up';
+                submitBtn.textContent = 'Sign Up';
+                toggleText.textContent = 'Already have an account?';
+                toggleLink.textContent = 'Login';
+            } else {
+                // Switch to login mode
+                signupFields.style.display = 'none';
+                usernameField.removeAttribute('required');
+                usernameField.value = ''; // Clear the hidden field
+                title.textContent = 'Login';
+                submitBtn.textContent = 'Login';
+                toggleText.textContent = "Don't have an account?";
+                toggleLink.textContent = 'Sign up';
+            }
+        }
+        
+        async function handleAuthSubmit(e) {
+            e.preventDefault();
+            
+            const isSignup = document.getElementById('signupFields').style.display !== 'none';
+            const submitBtn = document.getElementById('authSubmitBtn');
+            const originalText = submitBtn.textContent;
+            
+            submitBtn.disabled = true;
+            submitBtn.textContent = 'Processing...';
+            
+            try {
+                if (isSignup) {
+                    await signup();
+                } else {
+                    await login();
+                }
+            } catch (error) {
+                showAuthMessage(error.message, 'error');
+            } finally {
+                submitBtn.disabled = false;
+                submitBtn.textContent = originalText;
+            }
+        }
+        
+        async function signup() {
+            const username = document.getElementById('username').value;
+            const email = document.getElementById('loginEmail').value;
+            const password = document.getElementById('password').value;
+            
+            const response = await fetch('http://localhost:8000/auth/signup', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                },
+                body: JSON.stringify({
+                    username: username,
+                    email: email,
+                    password: password
+                })
+            });
+            
+            const data = await response.json();
+            
+            if (!response.ok) {
+                throw new Error(data.detail || 'Signup failed');
+            }
+            
+            showAuthMessage('Account created successfully! Please login.', 'success');
+            toggleAuthMode(); // Switch to login
+        }
+        
+        async function login() {
+            const email = document.getElementById('loginEmail').value;
+            const password = document.getElementById('password').value;
+            
+            const loginData = {
+                email: email,
+                password: password
+            };
+            
+            const response = await fetch('http://localhost:8000/auth/login', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json'
+                },
+                body: JSON.stringify(loginData)
+            });
+            
+            const data = await response.json();
+            
+            if (!response.ok) {
+                throw new Error(data.detail || 'Login failed');
+            }
+            
+            // Store tokens and user info
+            authState.accessToken = data.access_token;
+            authState.refreshToken = data.refresh_token;
+            authState.user = data.user;
+            authState.isLoggedIn = true;
+            
+            localStorage.setItem('accessToken', data.access_token);
+            localStorage.setItem('refreshToken', data.refresh_token);
+            localStorage.setItem('user', JSON.stringify(data.user));
+            
+            showMainContent();
+        }
+        
+        function logout() {
+            // Clear auth state
+            authState.isLoggedIn = false;
+            authState.user = null;
+            authState.accessToken = null;
+            authState.refreshToken = null;
+            
+            // Clear local storage
+            localStorage.removeItem('accessToken');
+            localStorage.removeItem('refreshToken');
+            localStorage.removeItem('user');
+            
+            // Disconnect websocket if connected
+            disconnectWebSocket();
+            
+            // Show auth section
+            document.getElementById('authSection').style.display = 'block';
+            document.getElementById('userInfo').style.display = 'none';
+            document.getElementById('mainContent').style.display = 'none';
+            
+            showAuthMessage('Logged out successfully', 'success');
+        }
+        
+        function showMainContent() {
+            document.getElementById('authSection').style.display = 'none';
+            document.getElementById('userInfo').style.display = 'block';
+            document.getElementById('mainContent').style.display = 'block';
+            
+            // Update user info
+            document.getElementById('userDetails').textContent = 
+                `Logged in as: ${authState.user.username} (${authState.user.email})`;
+            
+            clearAuthMessage();
+        }
+        
+        function showAuthMessage(message, type) {
+            const messageEl = document.getElementById('authMessage');
+            messageEl.textContent = message;
+            messageEl.className = type === 'error' ? 'error-message' : 'success-message';
+        }
+        
+        function clearAuthMessage() {
+            document.getElementById('authMessage').textContent = '';
+            document.getElementById('authMessage').className = '';
+        }
+        
+        // Enhanced fetch with auth
+        async function authenticatedFetch(url, options = {}) {
+            if (!authState.accessToken) {
+                throw new Error('No access token available. Please login.');
+            }
+            
+            const headers = {
+                ...options.headers,
+                'Authorization': `Bearer ${authState.accessToken}`
+            };
+            
+            try {
+                const response = await fetch(url, {
+                    ...options,
+                    headers
+                });
+                
+                // Handle different auth errors
+                if (response.status === 401) {
+                    const errorData = await response.json().catch(() => ({}));
+                    
+                    // Try to refresh token
+                    const refreshed = await refreshAccessToken();
+                    if (refreshed) {
+                        // Retry with new token
+                        return fetch(url, {
+                            ...options,
+                            headers: {
+                                ...options.headers,
+                                'Authorization': `Bearer ${authState.accessToken}`
+                            }
+                        });
+                    } else {
+                        // Refresh failed, logout
+                        logout();
+                        throw new Error(`Authentication failed: ${errorData.detail || 'Session expired'}`);
+                    }
+                }
+                
+                if (response.status === 403) {
+                    throw new Error('Access forbidden - insufficient permissions');
+                }
+                
+                return response;
+                
+            } catch (error) {
+                if (error.name === 'TypeError' && error.message.includes('fetch')) {
+                    throw new Error('Network error - check if backend server is running');
+                }
+                throw error;
+            }
+        }
+        
+        async function refreshAccessToken() {
+            try {
+                const response = await fetch('http://localhost:8000/auth/refresh', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                    },
+                    body: JSON.stringify({
+                        refresh_token: authState.refreshToken
+                    })
+                });
+                
+                if (response.ok) {
+                    const data = await response.json();
+                    authState.accessToken = data.access_token;
+                    localStorage.setItem('accessToken', data.access_token);
+                    return true;
+                }
+            } catch (error) {
+                console.error('Token refresh failed:', error);
+            }
+            
+            return false;
+        }
 
         function updateStatus(status) {
             document.getElementById('status').textContent = `Status: ${status}`;
@@ -166,6 +562,11 @@
         }
 
         function connectWebSocket() {
+            if (!authState.isLoggedIn || !authState.accessToken) {
+                alert('Please login first');
+                return;
+            }
+            
             const fileId = document.getElementById('fileId').value;
             if (!fileId) {
                 alert('Please enter a file ID');
@@ -177,15 +578,17 @@
             }
 
             currentFileId = fileId;
-            const wsUrl = `ws://localhost:8000/ws/upload/${fileId}`;
+            // Include token as query parameter for WebSocket auth
+            const wsUrl = `ws://localhost:8000/ws/upload/${fileId}?token=${encodeURIComponent(authState.accessToken)}`;
             
             updateStatus('Connecting...');
+            addMessage('info', { message: `Connecting to WebSocket: ${wsUrl}`, timestamp: new Date().toISOString() });
             
             ws = new WebSocket(wsUrl);
             
             ws.onopen = function() {
                 updateStatus(`Connected to ${fileId}`);
-                console.log('WebSocket connected');
+                addMessage('connected', { message: 'WebSocket connected successfully', timestamp: new Date().toISOString() });
             };
             
             ws.onmessage = function(event) {
@@ -202,14 +605,23 @@
                 }
             };
             
-            ws.onclose = function() {
+            ws.onclose = function(event) {
                 updateStatus('Disconnected');
-                console.log('WebSocket disconnected');
+                let reason = event.reason || 'Unknown reason';
+                
+                if (event.code === 4001) {
+                    reason = 'Authentication failed - please login again';
+                    addMessage('error', { message: 'WebSocket authentication failed', code: event.code, reason: reason });
+                    // Auto-logout on auth failure
+                    setTimeout(() => logout(), 2000);
+                } else {
+                    addMessage('info', { message: 'WebSocket disconnected', code: event.code, reason: reason });
+                }
             };
             
             ws.onerror = function(error) {
                 updateStatus('Error');
-                addMessage('error', { message: 'WebSocket error', error: error.toString() });
+                addMessage('error', { message: 'WebSocket error', error: error.toString(), timestamp: new Date().toISOString() });
                 console.error('WebSocket error:', error);
             };
         }
@@ -316,6 +728,40 @@
             });
         }
 
+        function updateChunkCalculation() {
+            if (!selectedFile) return;
+            
+            const oldChunkSize = uploadState.chunkSize;
+            uploadState.chunkSize = parseInt(document.getElementById('chunkSize').value);
+            uploadState.totalChunks = Math.ceil(selectedFile.size / uploadState.chunkSize);
+            
+            // Update the file info display
+            const fileInfo = document.getElementById('fileInfo');
+            fileInfo.innerHTML = `
+                <h4>Selected File:</h4>
+                <p><strong>Name:</strong> ${selectedFile.name}</p>
+                <p><strong>Size:</strong> ${formatBytes(selectedFile.size)}</p>
+                <p><strong>Type:</strong> ${selectedFile.type || 'Unknown'}</p>
+                <p><strong>Hash:</strong> ${uploadState.originalHash}</p>
+                <p><strong>Chunks:</strong> ${uploadState.totalChunks} (${formatBytes(uploadState.chunkSize)} each)</p>
+            `;
+            
+            // Update chunk info
+            document.getElementById('chunkInfo').textContent = 
+                `Ready to upload ${uploadState.totalChunks} chunks of ${formatBytes(uploadState.chunkSize)}`;
+            
+            addMessage('info', { 
+                message: 'Chunk size updated', 
+                old_chunk_size: formatBytes(oldChunkSize),
+                new_chunk_size: formatBytes(uploadState.chunkSize),
+                total_chunks: uploadState.totalChunks,
+                timestamp: new Date().toISOString() 
+            });
+            
+            console.log(`Chunk size changed: ${formatBytes(oldChunkSize)} → ${formatBytes(uploadState.chunkSize)}`);
+            console.log(`Total chunks: ${uploadState.totalChunks}`);
+        }
+
         async function calculateFileHash(file) {
             const arrayBuffer = await file.arrayBuffer();
             const hashBuffer = await crypto.subtle.digest('SHA-256', arrayBuffer);
@@ -339,6 +785,11 @@
         }
 
         async function startRealUpload() {
+            if (!authState.isLoggedIn) {
+                alert('Please login first');
+                return;
+            }
+            
             if (!selectedFile) {
                 alert('Please select a file first');
                 return;
@@ -396,7 +847,7 @@
                             hash: uploadState.originalHash
                         });
 
-                        const response = await fetch('http://localhost:8000/upload/start', {
+                        const response = await authenticatedFetch('http://localhost:8000/upload/start', {
                             method: 'POST',
                             body: formData
                         });
@@ -492,7 +943,7 @@
                 formData.append('chunk', chunk);
 
                 // Upload chunk using existing API
-                const response = await fetch('http://localhost:8000/upload/chunk', {
+                const response = await authenticatedFetch('http://localhost:8000/upload/chunk', {
                     method: 'POST',
                     body: formData
                 });
@@ -592,7 +1043,7 @@
                 formData.append('file_id', currentFileId);
                 formData.append('expected_hash', uploadState.originalHash);
 
-                const response = await fetch('http://localhost:8000/upload/complete', {
+                const response = await authenticatedFetch('http://localhost:8000/upload/complete', {
                     method: 'POST',
                     body: formData
                 });
@@ -676,7 +1127,7 @@
             // Clean up server session
             if (currentFileId) {
                 try {
-                    await fetch(`http://localhost:8000/upload/cancel/${currentFileId}`, {
+                    await authenticatedFetch(`http://localhost:8000/upload/cancel/${currentFileId}`, {
                         method: 'DELETE'
                     });
                     addMessage('info', { 
@@ -756,7 +1207,7 @@
                 const downloadUrl = `http://localhost:8000/upload/download/${encodeURIComponent(filename)}`;
                 
                 // Try to download using fetch first to check if file exists
-                const response = await fetch(downloadUrl);
+                const response = await authenticatedFetch(downloadUrl);
                 
                 if (!response.ok) {
                     const errorText = await response.text();
@@ -828,11 +1279,14 @@
             }
         }
 
-        // Auto-connect on page load
+        // Initialize authentication and cleanup on page load
         window.onload = function() {
+            initAuth();
             cleanupStaleSessions();
             warmupNetworkMonitor();
-            // connectWebSocket();
+            
+            // Add event listener for chunk size changes
+            document.getElementById('chunkSize').addEventListener('change', updateChunkCalculation);
         };
     </script>
 </body>

@@ -1,8 +1,9 @@
-from fastapi import APIRouter, Form, File, UploadFile, HTTPException, BackgroundTasks
-from fastapi.responses import JSONResponse
+from fastapi import APIRouter, Form, File, UploadFile, HTTPException, BackgroundTasks, Depends, status
+from fastapi.responses import JSONResponse, FileResponse
 import asyncio
 from typing import Dict, List
 import time
+import os
 
 from services.chunk_service import chunk_service
 from services.network_monitor import network_monitor
@@ -10,6 +11,8 @@ from db.crud import (
     create_file_session, get_file_session, mark_chunk_uploaded, 
     get_uploaded_chunk_numbers, update_upload_progress
 )
+from db.auth_crud import get_user_file_sessions, verify_file_ownership
+from dependencies.auth import get_current_active_user as get_current_user
 from config import settings
 
 # Import WebSocket manager after router is created to avoid circular imports
@@ -26,21 +29,24 @@ async def get_websocket_manager():
 
 @router.post("/start")
 async def start_upload(
+    background_tasks: BackgroundTasks,
     file_id: str = Form(...),
     filename: str = Form(...),
     total_chunks: int = Form(...),
     file_size: int = Form(...),
-    file_hash: str = Form(...)
+    file_hash: str = Form(...),
+    current_user: dict = Depends(get_current_user)  # ✅ REQUIRE AUTH
 ):
-    """Initialize a new file upload session"""
+    """Start chunked file upload (requires authentication)"""
     try:
-        # Create database session
+        # Create session in database with individual parameters
         session = await create_file_session(
             file_id=file_id,
             filename=filename,
             total_chunks=total_chunks,
             file_size=file_size,
-            file_hash=file_hash
+            file_hash=file_hash,
+            user_id=current_user["id"]
         )
         
         # Get optimal chunk size for this upload
@@ -58,12 +64,11 @@ async def start_upload(
             })
         
         return JSONResponse({
-            "status": "success",
+            "status": "started",
             "file_id": file_id,
-            "recommended_chunk_size": optimal_chunk_size,
-            "max_concurrent_uploads": settings.CONCURRENT_UPLOADS if network_monitor.should_use_concurrent_upload() else 1,
-            "websocket_url": f"ws://localhost:8000/ws/upload/{file_id}",  # WebSocket URL
-            "session": session
+            "chunk_size": optimal_chunk_size,
+            "message": "Upload session created",
+            "user_id": current_user["id"]  # ✅ RETURN USER INFO
         })
         
     except Exception as e:
@@ -76,12 +81,17 @@ async def upload_chunk(
     total_chunks: int = Form(...),
     chunk_hash: str = Form(...),
     attempt: int = Form(default=1),
-    chunk: UploadFile = File(...)
+    chunk: UploadFile = File(...),
+    current_user: dict = Depends(get_current_user)  # ✅ REQUIRE AUTH
 ):
     """Upload a single chunk with verification and retry support"""
     start_time = time.time()
     
     try:
+        # ✅ VERIFY USER OWNS THIS UPLOAD SESSION
+        session = get_file_session(file_id)
+        if not session or session.get("user_id") != current_user["id"]:
+            raise HTTPException(status_code=403, detail="Unauthorized access to upload session")
         # Validate chunk
         if chunk.size == 0:
             raise HTTPException(status_code=400, detail="Empty chunk received")
@@ -185,13 +195,20 @@ async def upload_chunk(
         )
 
 @router.get("/status/{file_id}")
-async def get_upload_status(file_id: str):
+async def get_upload_status(
+    file_id: str,
+    current_user: dict = Depends(get_current_user)  # ✅ REQUIRE AUTH
+):
     """Get current upload status and missing chunks"""
     try:
         # Get session info
         session = get_file_session(file_id)
         if not session:
             raise HTTPException(status_code=404, detail="Upload session not found")
+        
+        # ✅ VERIFY USER OWNS THIS UPLOAD SESSION
+        if session.get("user_id") != current_user["id"]:
+            raise HTTPException(status_code=403, detail="Unauthorized access to upload session")
         
         # Get uploaded chunks
         uploaded_chunks = await chunk_service.get_uploaded_chunks(file_id)
@@ -226,7 +243,8 @@ async def get_upload_status(file_id: str):
 async def complete_upload(
     background_tasks: BackgroundTasks,
     file_id: str = Form(...),
-    expected_hash: str = Form(...)
+    expected_hash: str = Form(...),
+    current_user: dict = Depends(get_current_user)  # ✅ REQUIRE AUTH
 ):
     """Complete upload by merging chunks and verifying file"""
     try:
@@ -242,6 +260,10 @@ async def complete_upload(
         session = get_file_session(file_id)
         if not session:
             raise HTTPException(status_code=404, detail="Upload session not found")
+        
+        # ✅ VERIFY USER OWNS THIS UPLOAD SESSION
+        if session.get("user_id") != current_user["id"]:
+            raise HTTPException(status_code=403, detail="Unauthorized access to upload session")
         
         # Merge chunks with verification
         final_file_path, merged_hash = await chunk_service.merge_chunks_with_verification(
@@ -287,12 +309,20 @@ async def complete_upload(
         raise HTTPException(status_code=500, detail=f"Failed to complete upload: {str(e)}")
 
 @router.delete("/cancel/{file_id}")
-async def cancel_upload(file_id: str, background_tasks: BackgroundTasks):
+async def cancel_upload(
+    file_id: str, 
+    background_tasks: BackgroundTasks,
+    current_user: dict = Depends(get_current_user)  # ✅ REQUIRE AUTH
+):
     """Cancel an ongoing upload and clean up"""
     try:
         # Update session status
         session = get_file_session(file_id)
         if session:
+            # ✅ VERIFY USER OWNS THIS UPLOAD SESSION
+            if session.get("user_id") != current_user["id"]:
+                raise HTTPException(status_code=403, detail="Unauthorized access to upload session")
+            
             await update_upload_progress(file_id, 0, session['total_chunks'], status="cancelled")
         
         # Schedule cleanup
@@ -317,7 +347,10 @@ async def cleanup_stale_uploads():
         print(f"Error during startup cleanup: {e}")
 
 @router.get("/download/{filename}")
-async def download_file(filename: str):
+async def download_file(
+    filename: str,
+    current_user: dict = Depends(get_current_user)  # ✅ REQUIRE AUTH
+):
     """Download an uploaded file"""
     from fastapi.responses import FileResponse
     import os
@@ -330,6 +363,10 @@ async def download_file(filename: str):
     
     if not file_path.exists():
         raise HTTPException(status_code=404, detail=f"File '{filename}' not found in uploaded_files directory")
+    
+    # ✅ TODO: ADD FILE OWNERSHIP VERIFICATION
+    # For now allowing all authenticated users to download files
+    # In production, you might want to track file ownership in database
     
     return FileResponse(
         path=str(file_path),

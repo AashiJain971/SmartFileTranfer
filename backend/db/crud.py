@@ -7,7 +7,8 @@ async def create_file_session(
     filename: str, 
     total_chunks: int, 
     file_size: int, 
-    file_hash: str
+    file_hash: str,
+    user_id: str
 ) -> Dict[str, Any]:
     """Create a new file upload session"""
     session_data = {
@@ -16,6 +17,7 @@ async def create_file_session(
         "total_chunks": total_chunks,
         "file_size": file_size,
         "file_hash": file_hash,
+        "user_id": user_id,
         "uploaded_chunks": 0,
         "status": "uploading",
         "created_at": datetime.utcnow().isoformat(),
@@ -41,6 +43,19 @@ async def create_file_session(
             "uploaded_chunks": 0,
             "status": "uploading"
         }
+
+async def get_user_by_id(user_id: str) -> Optional[Dict[str, Any]]:
+    """Get user by ID"""
+    try:
+        result = supabase.table("users").select("*").eq("id", user_id).execute()
+        
+        if result.data:
+            return result.data[0]
+        return None
+        
+    except Exception as e:
+        print(f"Error getting user by ID: {e}")
+        return None
 
 def get_file_session(file_id: str) -> Optional[Dict[str, Any]]:
     """Get file session by ID"""
