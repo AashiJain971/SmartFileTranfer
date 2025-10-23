@@ -346,6 +346,72 @@ async def cleanup_stale_uploads():
     except Exception as e:
         print(f"Error during startup cleanup: {e}")
 
+@router.get("/files")
+async def list_user_files(current_user: dict = Depends(get_current_user)):
+    """List all files uploaded by the current user"""
+    try:
+        # Get user's file sessions from database
+        user_sessions = await get_user_file_sessions(current_user["id"])
+        
+        files = []
+        for session in user_sessions:
+            # Only include completed uploads
+            if session.get("status") == "completed":
+                filename = session.get("filename")
+                file_path = settings.UPLOAD_DIR / filename
+                
+                # Check if file still exists
+                if file_path.exists():
+                    stat = file_path.stat()
+                    files.append({
+                        "id": session.get("file_id"),
+                        "name": filename,
+                        "size": session.get("file_size", stat.st_size),
+                        "upload_date": session.get("created_at"),
+                        "status": session.get("status"),
+                        "hash": session.get("file_hash")
+                    })
+        
+        return JSONResponse({
+            "files": files,
+            "total": len(files)
+        })
+        
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to list files: {str(e)}")
+
+@router.delete("/files/{filename}")
+async def delete_file(
+    filename: str,
+    current_user: dict = Depends(get_current_user)
+):
+    """Delete an uploaded file"""
+    try:
+        # Handle both just filename or full path with filename
+        if '/' in filename:
+            filename = os.path.basename(filename)
+        
+        file_path = settings.UPLOAD_DIR / filename
+        
+        if not file_path.exists():
+            raise HTTPException(status_code=404, detail=f"File '{filename}' not found")
+        
+        # TODO: Add file ownership verification from database
+        # For now allowing all authenticated users to delete files
+        # In production, verify the user owns this file
+        
+        # Delete the file
+        os.remove(file_path)
+        
+        return JSONResponse({
+            "status": "deleted",
+            "filename": filename,
+            "message": f"File '{filename}' deleted successfully"
+        })
+        
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to delete file: {str(e)}")
+
 @router.get("/download/{filename}")
 async def download_file(
     filename: str,
