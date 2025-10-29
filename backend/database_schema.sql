@@ -55,6 +55,8 @@ CREATE TABLE IF NOT EXISTS file_sessions (
     uploaded_chunks INTEGER DEFAULT 0,
     progress DECIMAL(5,2) DEFAULT 0.0,
     status VARCHAR(50) DEFAULT 'uploading',
+    upload_type VARCHAR(20) DEFAULT 'regular' CHECK (upload_type IN ('regular', 'chat')), -- ✅ CHAT SUPPORT
+    chat_room_id UUID, -- ✅ LINK TO CHAT ROOM (will reference chat_rooms table)
     created_at TIMESTAMP DEFAULT NOW(),
     updated_at TIMESTAMP DEFAULT NOW()
 );
@@ -102,6 +104,85 @@ CREATE TRIGGER update_file_sessions_updated_at
     FOR EACH ROW 
     EXECUTE FUNCTION update_updated_at_column();
 
+-- ✅ CHAT TABLES FOR REAL-TIME MESSAGING AND FILE SHARING
+
+-- Chat Rooms (direct messages or group chats)
+CREATE TABLE IF NOT EXISTS chat_rooms (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    name VARCHAR(255),
+    type VARCHAR(20) NOT NULL CHECK (type IN ('direct', 'group')), 
+    created_by UUID REFERENCES users(id) ON DELETE CASCADE,
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+    updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+);
+
+-- Chat Room Members
+CREATE TABLE IF NOT EXISTS chat_room_members (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    room_id UUID REFERENCES chat_rooms(id) ON DELETE CASCADE,
+    user_id UUID REFERENCES users(id) ON DELETE CASCADE,
+    joined_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+    role VARCHAR(20) DEFAULT 'member' CHECK (role IN ('admin', 'member')),
+    UNIQUE(room_id, user_id)
+);
+
+-- Messages (text messages and file messages)
+CREATE TABLE IF NOT EXISTS messages (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    room_id UUID REFERENCES chat_rooms(id) ON DELETE CASCADE,
+    sender_id UUID REFERENCES users(id) ON DELETE CASCADE,
+    message_type VARCHAR(20) NOT NULL CHECK (message_type IN ('text', 'file', 'image')),
+    content TEXT, -- For text messages
+    
+    -- File message fields (links to existing file system)
+    file_session_id INTEGER REFERENCES file_sessions(id), -- ✅ LINKS TO EXISTING UPLOAD SYSTEM
+    file_path VARCHAR(500), 
+    file_name VARCHAR(255),
+    file_size BIGINT,
+    file_hash VARCHAR(128), -- ✅ USES EXISTING HASH VERIFICATION
+    
+    reply_to_id UUID REFERENCES messages(id), -- For message replies
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+    updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+);
+
+-- Message Status (read receipts, delivery status)
+CREATE TABLE IF NOT EXISTS message_status (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    message_id UUID REFERENCES messages(id) ON DELETE CASCADE,
+    user_id UUID REFERENCES users(id) ON DELETE CASCADE,
+    status VARCHAR(20) NOT NULL CHECK (status IN ('sent', 'delivered', 'read')),
+    timestamp TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+    UNIQUE(message_id, user_id)
+);
+
+-- Add foreign key constraint for file_sessions.chat_room_id
+ALTER TABLE file_sessions ADD CONSTRAINT fk_file_sessions_chat_room 
+    FOREIGN KEY (chat_room_id) REFERENCES chat_rooms(id) ON DELETE SET NULL;
+
+-- Indexes for chat performance
+CREATE INDEX IF NOT EXISTS idx_messages_room_id ON messages(room_id);
+CREATE INDEX IF NOT EXISTS idx_messages_created_at ON messages(created_at);
+CREATE INDEX IF NOT EXISTS idx_messages_sender_id ON messages(sender_id);
+CREATE INDEX IF NOT EXISTS idx_chat_room_members_user_id ON chat_room_members(user_id);
+CREATE INDEX IF NOT EXISTS idx_chat_room_members_room_id ON chat_room_members(room_id);
+CREATE INDEX IF NOT EXISTS idx_message_status_user_id ON message_status(user_id);
+CREATE INDEX IF NOT EXISTS idx_message_status_message_id ON message_status(message_id);
+CREATE INDEX IF NOT EXISTS idx_chat_rooms_created_by ON chat_rooms(created_by);
+CREATE INDEX IF NOT EXISTS idx_chat_rooms_type ON chat_rooms(type);
+CREATE INDEX IF NOT EXISTS idx_file_sessions_chat_room_id ON file_sessions(chat_room_id);
+
+-- Create triggers for chat tables
+CREATE TRIGGER update_chat_rooms_updated_at 
+    BEFORE UPDATE ON chat_rooms 
+    FOR EACH ROW 
+    EXECUTE FUNCTION update_updated_at_column();
+
+CREATE TRIGGER update_messages_updated_at 
+    BEFORE UPDATE ON messages 
+    FOR EACH ROW 
+    EXECUTE FUNCTION update_updated_at_column();
+
 -- Disable RLS for development (since we're using custom auth, not Supabase Auth)
 -- In production, you might want to enable RLS with proper service role policies
 ALTER TABLE users DISABLE ROW LEVEL SECURITY;
@@ -109,8 +190,18 @@ ALTER TABLE user_sessions DISABLE ROW LEVEL SECURITY;
 ALTER TABLE password_reset_tokens DISABLE ROW LEVEL SECURITY;
 ALTER TABLE file_sessions DISABLE ROW LEVEL SECURITY;
 ALTER TABLE uploaded_chunks DISABLE ROW LEVEL SECURITY;
+ALTER TABLE chat_rooms DISABLE ROW LEVEL SECURITY;
+ALTER TABLE chat_room_members DISABLE ROW LEVEL SECURITY;
+ALTER TABLE messages DISABLE ROW LEVEL SECURITY;
+ALTER TABLE message_status DISABLE ROW LEVEL SECURITY;
 
 -- Grant necessary permissions
 GRANT USAGE ON SCHEMA public TO anon, authenticated;
 GRANT ALL ON ALL TABLES IN SCHEMA public TO authenticated;
 GRANT ALL ON ALL SEQUENCES IN SCHEMA public TO authenticated;
+
+-- Additional grants for chat tables
+GRANT ALL ON chat_rooms TO authenticated;
+GRANT ALL ON chat_room_members TO authenticated;
+GRANT ALL ON messages TO authenticated;
+GRANT ALL ON message_status TO authenticated;

@@ -8,7 +8,9 @@ async def create_file_session(
     total_chunks: int, 
     file_size: int, 
     file_hash: str,
-    user_id: str
+    user_id: str,
+    upload_type: str = "regular",  # ✅ ADD SUPPORT FOR CHAT
+    chat_room_id: Optional[str] = None  # ✅ LINK TO CHAT ROOM
 ) -> Dict[str, Any]:
     """Create a new file upload session"""
     session_data = {
@@ -20,6 +22,8 @@ async def create_file_session(
         "user_id": user_id,
         "uploaded_chunks": 0,
         "status": "uploading",
+        "upload_type": upload_type,  # ✅ SUPPORT CHAT UPLOADS
+        "chat_room_id": chat_room_id,  # ✅ LINK TO CHAT ROOM
         "created_at": datetime.utcnow().isoformat(),
         "updated_at": datetime.utcnow().isoformat()
     }
@@ -60,18 +64,19 @@ async def get_user_by_id(user_id: str) -> Optional[Dict[str, Any]]:
 def get_file_session(file_id: str) -> Optional[Dict[str, Any]]:
     """Get file session by ID"""
     try:
+        print(f"DEBUG: Looking for file session with ID: {file_id}")  # Debug logging
         result = supabase.table("file_sessions").select("*").eq("file_id", file_id).execute()
-        return result.data[0] if result.data else None
+        print(f"DEBUG: Database query result: {result.data}")  # Debug logging
+        
+        if result.data:
+            return result.data[0]
+        else:
+            print(f"DEBUG: No file session found for ID: {file_id}")
+            return None
     except Exception as e:
         print(f"Database error in get_file_session: {e}")
-        # Return a mock session for testing if database fails
-        return {
-            "file_id": file_id,
-            "filename": "test_file.txt",
-            "total_chunks": 1,
-            "file_size": 1000,
-            "status": "uploading"
-        }
+        print(f"DEBUG: Full exception details: {type(e).__name__}: {str(e)}")
+        return None  # Return None instead of mock data to see real errors
 
 async def update_upload_progress(
     file_id: str, 

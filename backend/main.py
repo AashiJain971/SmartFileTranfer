@@ -6,6 +6,7 @@ from contextlib import asynccontextmanager
 from routers import upload
 from routers import websocket  # Add WebSocket router
 from routers import auth  # Add auth router
+from routers import chat  # ✅ ADD CHAT ROUTER
 from services.chunk_service import chunk_service
 from db.crud import cleanup_failed_sessions
 from config import settings
@@ -50,9 +51,9 @@ async def periodic_cleanup():
             print(f"Error in periodic cleanup: {e}")
 
 app = FastAPI(
-    title="Smart File Transfer API",
-    description="Robust file transfer system with chunk-based uploads for unstable networks",
-    version="2.0.0",
+    title="Smart File Transfer with Chat API",
+    description="Robust file transfer system with chunk-based uploads and real-time chat for unstable networks",
+    version="3.0.0",
     lifespan=lifespan
 )
 
@@ -66,22 +67,28 @@ app.add_middleware(
 )
 
 # Include routers
-app.include_router(upload.router)
-app.include_router(websocket.router)  # Add WebSocket routes
 app.include_router(auth.router)  # Add authentication routes
+app.include_router(upload.router)
+app.include_router(chat.router)  # ✅ ADD CHAT ROUTES
+app.include_router(websocket.router)  # Add WebSocket routes
 
 @app.get("/")
 async def root():
     return {
-        "message": "Smart File Transfer API",
-        "version": "2.0.0",
+        "message": "Smart File Transfer with Chat API",
+        "version": "3.0.0",
         "features": [
             "Chunked uploads with resume",
-            "Network-adaptive chunk sizing",
+            "Network-adaptive chunk sizing", 
             "Automatic retry mechanisms",
             "File integrity verification",
             "Robust error handling",
-            "Concurrent upload support"
+            "Concurrent upload support",
+            "Real-time chat messaging",  # ✅ NEW FEATURE
+            "Person-to-person file sharing",  # ✅ NEW FEATURE
+            "Group chat with file sharing",  # ✅ NEW FEATURE
+            "WebSocket real-time updates",  # ✅ NEW FEATURE
+            "Read receipts and typing indicators"  # ✅ NEW FEATURE
         ]
     }
 
@@ -89,6 +96,12 @@ async def root():
 async def health_check():
     return {
         "status": "healthy",
+        "features": [
+            "file_transfer",
+            "chat", 
+            "websocket", 
+            "authentication"
+        ],
         "settings": {
             "max_chunk_size": settings.MAX_CHUNK_SIZE,
             "min_chunk_size": settings.MIN_CHUNK_SIZE,
@@ -96,6 +109,32 @@ async def health_check():
             "concurrent_uploads": settings.CONCURRENT_UPLOADS
         }
     }
+
+@app.get("/speedtest/{size_kb}")
+async def speed_test(size_kb: int):
+    """
+    Endpoint for network speed testing - returns random data of specified size
+    """
+    from fastapi.responses import Response
+    import os
+    
+    # Limit size to prevent abuse (max 1MB)
+    size_kb = min(size_kb, 1024)
+    size_bytes = size_kb * 1024
+    
+    # Generate random data
+    random_data = os.urandom(size_bytes)
+    
+    return Response(
+        content=random_data,
+        media_type="application/octet-stream",
+        headers={
+            "Content-Length": str(size_bytes),
+            "Cache-Control": "no-cache, no-store, must-revalidate",
+            "Pragma": "no-cache",
+            "Expires": "0"
+        }
+    )
 
 if __name__ == "__main__":
     import uvicorn

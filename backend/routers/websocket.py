@@ -1,9 +1,11 @@
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect, HTTPException, Query
-from typing import Dict, Set, Optional
+from typing import Dict, Set, Optional, List
 import json
 import asyncio
 from datetime import datetime
-from services.auth_service import AuthService
+from services.auth_service import auth_service
+from db.chat_crud import ChatCRUD
+from models.chat import MessageType, MessageStatus
 
 router = APIRouter()
 
@@ -13,7 +15,7 @@ class ConnectionManager:
     def __init__(self):
         # Store active connections by file_id with user info
         self.active_connections: Dict[str, Dict[WebSocket, dict]] = {}
-        self.auth_service = AuthService()
+        self.auth_service = auth_service
     
     async def connect(self, websocket: WebSocket, file_id: str, user: dict):
         """Accept WebSocket connection for a specific file upload"""
@@ -74,9 +76,131 @@ class ConnectionManager:
             "file_path": file_path
         })
 
-# Global connection manager
-manager = ConnectionManager()
+# ✅ ENHANCED CHAT CONNECTION MANAGER
+class ChatConnectionManager:
+    """Enhanced WebSocket manager for chat rooms with file upload support"""
+    
+    def __init__(self):
+        # Room-based connections: {room_id: {user_id: websocket}}
+        self.room_connections: Dict[str, Dict[str, WebSocket]] = {}
+        # User-based connections: {user_id: {room_id: websocket}}
+        self.user_connections: Dict[str, Dict[str, WebSocket]] = {}
+        # User status: {user_id: {"status": "online", "last_seen": datetime}}
+        self.user_status: Dict[str, dict] = {}
+        self.auth_service = auth_service
+        
+    async def connect_to_room(self, websocket: WebSocket, room_id: str, user_id: str, username: str):
+        """Connect user to a specific chat room"""
+        await websocket.accept()
+        
+        # Initialize room if it doesn't exist
+        if room_id not in self.room_connections:
+            self.room_connections[room_id] = {}
+        
+        # Initialize user connections if it doesn't exist
+        if user_id not in self.user_connections:
+            self.user_connections[user_id] = {}
+            
+        # Add connection
+        self.room_connections[room_id][user_id] = websocket
+        self.user_connections[user_id][room_id] = websocket
+        
+        # Update user status
+        self.user_status[user_id] = {
+            "status": "online",
+            "last_seen": datetime.utcnow(),
+            "username": username
+        }
+        
+        print(f"💬 Chat WebSocket connected - Room: {room_id}, User: {username}")
+        
+        # Notify others in the room that user joined
+        await self.broadcast_to_room(room_id, {
+            "type": "user_joined",
+            "user_id": user_id,
+            "username": username,
+            "timestamp": datetime.utcnow().isoformat()
+        }, exclude_user=user_id)
+    
+    def disconnect_from_room(self, room_id: str, user_id: str):
+        """Disconnect user from a specific room"""
+        username = self.user_status.get(user_id, {}).get("username", "Unknown")
+        
+        if room_id in self.room_connections:
+            self.room_connections[room_id].pop(user_id, None)
+            
+        if user_id in self.user_connections:
+            self.user_connections[user_id].pop(room_id, None)
+            
+        # Update user status if they have no active connections
+        if user_id in self.user_connections and len(self.user_connections[user_id]) == 0:
+            self.user_status[user_id] = {
+                "status": "offline",
+                "last_seen": datetime.utcnow(),
+                "username": username
+            }
+        
+        print(f"💬 Chat WebSocket disconnected - Room: {room_id}, User: {username}")
+    
+    async def broadcast_to_room(self, room_id: str, message: dict, exclude_user: str = None):
+        """Send message to all users in a room"""
+        if room_id not in self.room_connections:
+            return
+            
+        disconnected_users = []
+        sent_count = 0
+        
+        for user_id, websocket in self.room_connections[room_id].items():
+            if exclude_user and user_id == exclude_user:
+                continue
+                
+            try:
+                await websocket.send_text(json.dumps(message))
+                sent_count += 1
+            except Exception as e:
+                print(f"Error sending to user {user_id}: {e}")
+                disconnected_users.append(user_id)
+        
+        # Clean up disconnected users
+        for user_id in disconnected_users:
+            self.disconnect_from_room(room_id, user_id)
+            
+        print(f"💬 Broadcasted to {sent_count} users in room {room_id}")
+    
+    async def send_to_user(self, user_id: str, room_id: str, message: dict):
+        """Send message to a specific user in a room"""
+        if (user_id in self.user_connections and 
+            room_id in self.user_connections[user_id]):
+            
+            websocket = self.user_connections[user_id][room_id]
+            try:
+                await websocket.send_text(json.dumps(message))
+                return True
+            except Exception as e:
+                print(f"Error sending to user {user_id}: {e}")
+                self.disconnect_from_room(room_id, user_id)
+        return False
+    
+    async def get_online_users_in_room(self, room_id: str) -> List[dict]:
+        """Get list of online users in a room"""
+        online_users = []
+        if room_id in self.room_connections:
+            for user_id in self.room_connections[room_id]:
+                if user_id in self.user_status:
+                    user_info = self.user_status[user_id]
+                    if user_info["status"] == "online":
+                        online_users.append({
+                            "user_id": user_id,
+                            "username": user_info["username"],
+                            "status": user_info["status"]
+                        })
+        return online_users
 
+# Global connection managers
+upload_manager = ConnectionManager()  # ✅ EXISTING UPLOAD MANAGER
+chat_manager = ChatConnectionManager()  # ✅ NEW CHAT MANAGER
+
+# ✅ EXISTING UPLOAD WEBSOCKET (PRESERVED)
 @router.websocket("/ws/upload/{file_id}")
 async def websocket_upload_progress(
     websocket: WebSocket, 
@@ -92,7 +216,7 @@ async def websocket_upload_progress(
     
     try:
         # Verify JWT token
-        payload = manager.auth_service.verify_token(token)
+        payload = upload_manager.auth_service.verify_token(token)
         user_id = payload.get("sub")
         
         if not user_id:
@@ -117,7 +241,7 @@ async def websocket_upload_progress(
         await websocket.close(code=4001, reason="Authentication failed")
         return
     
-    await manager.connect(websocket, file_id, user_info)
+    await upload_manager.connect(websocket, file_id, user_info)
     
     try:
         # Send initial connection confirmation
@@ -154,7 +278,305 @@ async def websocket_upload_progress(
                 }))
                 
     except WebSocketDisconnect:
-        manager.disconnect(websocket, file_id)
+        upload_manager.disconnect(websocket, file_id)
     except Exception as e:
         print(f"WebSocket error for {file_id}: {e}")
-        manager.disconnect(websocket, file_id)
+        upload_manager.disconnect(websocket, file_id)
+
+
+# ✅ GENERAL CHAT WEBSOCKET (NO ROOM SPECIFIC)
+@router.websocket("/ws/chat")
+async def websocket_chat_general(websocket: WebSocket, token: str = Query(...)):
+    """WebSocket endpoint for general chat connection (before room selection)"""
+    try:
+        print(f"WebSocket /ws/chat auth attempt - Token: {token[:50]}...")
+        # ✅ AUTHENTICATE USER
+        payload = chat_manager.auth_service.verify_token(token)
+        print(f"Token verified - User ID: {payload.get('sub')}")
+        user_id = payload.get("sub")
+        
+        if not user_id:
+            print("No user ID in token payload")
+            await websocket.close(code=4001, reason="Invalid token")
+            return
+        
+        # Get user info
+        from db.auth_crud import get_user_by_id
+        user = await get_user_by_id(user_id)
+        if not user:
+            print(f"User {user_id} not found in database")
+            await websocket.close(code=4001, reason="User not found")
+            return
+        
+        print(f"WebSocket authentication successful for user: {user.get('username')}")
+        
+        await websocket.accept()
+        username = user.get("username", "Unknown")
+        
+        # Send connection confirmation
+        await websocket.send_text(json.dumps({
+            "type": "connected",
+            "user_id": user_id,
+            "username": username,
+            "message": "Connected to chat system",
+            "timestamp": datetime.utcnow().isoformat()
+        }))
+        
+        try:
+            while True:
+                # ✅ RECEIVE AND HANDLE CLIENT MESSAGES
+                data = await websocket.receive_text()
+                message_data = json.loads(data)
+                
+                message_type = message_data.get("type")
+                
+                if message_type == "ping":
+                    await websocket.send_text(json.dumps({
+                        "type": "pong",
+                        "timestamp": datetime.utcnow().isoformat()
+                    }))
+                elif message_type == "heartbeat":
+                    await websocket.send_text(json.dumps({
+                        "type": "heartbeat_ack",
+                        "timestamp": datetime.utcnow().isoformat()
+                    }))
+                    
+        except WebSocketDisconnect:
+            pass
+        except Exception as e:
+            print(f"General Chat WebSocket error: {e}")
+            
+    except HTTPException as he:
+        print(f"WebSocket HTTP exception: {he.status_code} - {he.detail}")
+        try:
+            await websocket.close(code=4001, reason=he.detail)
+        except:
+            pass
+    except Exception as e:
+        print(f"General Chat WebSocket connection error: {e}")
+        import traceback
+        traceback.print_exc()
+        try:
+            await websocket.close(code=4000, reason="Internal server error")
+        except:
+            pass
+
+
+# ✅ ROOM-SPECIFIC CHAT WEBSOCKET WITH FILE UPLOAD INTEGRATION
+@router.websocket("/ws/chat/{room_id}")
+async def websocket_chat_endpoint(websocket: WebSocket, room_id: str, token: str = Query(...)):
+    """WebSocket endpoint for real-time chat with file upload progress"""
+    try:
+        # ✅ AUTHENTICATE USER
+        payload = chat_manager.auth_service.verify_token(token)
+        user_id = payload.get("sub")
+        
+        if not user_id:
+            await websocket.close(code=4001, reason="Invalid token")
+            return
+        
+        # Get user info
+        from db.auth_crud import get_user_by_id
+        user = await get_user_by_id(user_id)
+        if not user:
+            await websocket.close(code=4001, reason="User not found")
+            return
+        
+        # ✅ CHECK ROOM MEMBERSHIP
+        is_member = await ChatCRUD.is_user_in_room(user_id, room_id)
+        if not is_member:
+            await websocket.close(code=4003, reason="Not a member of this room")
+            return
+        
+        # ✅ CONNECT TO CHAT ROOM
+        username = user.get("username", "Unknown")
+        await chat_manager.connect_to_room(websocket, room_id, user_id, username)
+        
+        # Send connection confirmation with room info
+        online_users = await chat_manager.get_online_users_in_room(room_id)
+        await websocket.send_text(json.dumps({
+            "type": "connected",
+            "room_id": room_id,
+            "user_id": user_id,
+            "username": username,
+            "online_users": online_users,
+            "timestamp": datetime.utcnow().isoformat()
+        }))
+        
+        try:
+            while True:
+                # ✅ RECEIVE AND HANDLE CLIENT MESSAGES
+                data = await websocket.receive_text()
+                message_data = json.loads(data)
+                
+                message_type = message_data.get("type")
+                
+                if message_type == "text_message":
+                    await handle_text_message(room_id, user_id, username, message_data)
+                elif message_type == "typing":
+                    await handle_typing_indicator(room_id, user_id, username, message_data)
+                elif message_type == "read_receipt":
+                    await handle_read_receipt(room_id, user_id, message_data)
+                elif message_type == "ping":
+                    await websocket.send_text(json.dumps({
+                        "type": "pong",
+                        "timestamp": datetime.utcnow().isoformat()
+                    }))
+                    
+        except WebSocketDisconnect:
+            pass
+        except Exception as e:
+            print(f"Chat WebSocket error: {e}")
+        finally:
+            # ✅ CLEAN UP CONNECTION
+            chat_manager.disconnect_from_room(room_id, user_id)
+            
+            # Notify others that user left
+            await chat_manager.broadcast_to_room(room_id, {
+                "type": "user_left",
+                "user_id": user_id,
+                "username": username,
+                "timestamp": datetime.utcnow().isoformat()
+            })
+            
+    except Exception as e:
+        print(f"Chat WebSocket connection error: {e}")
+        try:
+            await websocket.close(code=4000, reason="Internal server error")
+        except:
+            pass
+
+
+# ✅ CHAT MESSAGE HANDLERS
+async def handle_text_message(room_id: str, sender_id: str, sender_username: str, message_data: dict):
+    """Handle incoming text message"""
+    try:
+        content = message_data.get("content", "").strip()
+        if not content:
+            return
+            
+        reply_to_id = message_data.get("reply_to_id")
+        
+        # Save message to database
+        message = await ChatCRUD.send_text_message(
+            sender_id=sender_id,
+            room_id=room_id,
+            content=content,
+            reply_to_id=reply_to_id
+        )
+        
+        # Get reply context if exists
+        reply_context = None
+        if reply_to_id:
+            reply_msg = await ChatCRUD.get_message_by_id(reply_to_id)
+            if reply_msg:
+                reply_context = {
+                    "id": reply_msg["id"],
+                    "content": reply_msg["content"][:100] + ("..." if len(reply_msg["content"]) > 100 else ""),
+                    "sender_username": reply_msg.get("sender_username", "Unknown"),
+                    "message_type": reply_msg["message_type"]
+                }
+        
+        # ✅ BROADCAST MESSAGE TO ALL ROOM MEMBERS
+        broadcast_message = {
+            "type": "new_message",
+            "message": {
+                "id": message["id"],
+                "room_id": room_id,
+                "sender_id": sender_id,
+                "sender_username": sender_username,
+                "message_type": MessageType.TEXT.value,
+                "content": content,
+                "reply_to": reply_context,
+                "created_at": message["created_at"]
+            },
+            "timestamp": datetime.utcnow().isoformat()
+        }
+        
+        await chat_manager.broadcast_to_room(room_id, broadcast_message)
+        
+        # Mark as delivered for all room members
+        member_ids = await ChatCRUD.get_room_member_ids(room_id)
+        for member_id in member_ids:
+            if member_id != sender_id:  # Don't mark as delivered for sender
+                await ChatCRUD.mark_message_status(message["id"], member_id, MessageStatus.DELIVERED.value)
+        
+    except Exception as e:
+        print(f"Error handling text message: {e}")
+
+
+async def handle_typing_indicator(room_id: str, user_id: str, username: str, message_data: dict):
+    """Handle typing indicator"""
+    try:
+        is_typing = message_data.get("is_typing", False)
+        
+        await chat_manager.broadcast_to_room(room_id, {
+            "type": "typing",
+            "user_id": user_id,
+            "username": username,
+            "is_typing": is_typing,
+            "timestamp": datetime.utcnow().isoformat()
+        }, exclude_user=user_id)
+        
+    except Exception as e:
+        print(f"Error handling typing indicator: {e}")
+
+
+async def handle_read_receipt(room_id: str, user_id: str, message_data: dict):
+    """Handle read receipt"""
+    try:
+        message_id = message_data.get("message_id")
+        if not message_id:
+            return
+            
+        # Mark message as read
+        success = await ChatCRUD.mark_message_status(message_id, user_id, MessageStatus.READ.value)
+        
+        if success:
+            # Notify sender about read receipt
+            message = await ChatCRUD.get_message_by_id(message_id)
+            if message and message["sender_id"] != user_id:
+                await chat_manager.send_to_user(message["sender_id"], room_id, {
+                    "type": "message_read",
+                    "message_id": message_id,
+                    "reader_id": user_id,
+                    "timestamp": datetime.utcnow().isoformat()
+                })
+        
+    except Exception as e:
+        print(f"Error handling read receipt: {e}")
+
+
+# ✅ HELPER FUNCTIONS FOR FILE UPLOAD INTEGRATION
+async def notify_chat_file_progress(room_id: str, file_id: str, sender_id: str, 
+                                  progress_data: dict):
+    """Notify chat room about file upload progress"""
+    try:
+        await chat_manager.broadcast_to_room(room_id, {
+            "type": "file_upload_progress",
+            "file_id": file_id,
+            "sender_id": sender_id,
+            "progress": progress_data.get("progress", 0),
+            "chunk_number": progress_data.get("chunk_number", 0),
+            "total_chunks": progress_data.get("total_chunks", 0),
+            "file_name": progress_data.get("file_name", ""),
+            "timestamp": datetime.utcnow().isoformat()
+        })
+    except Exception as e:
+        print(f"Error notifying chat file progress: {e}")
+
+
+async def notify_chat_file_complete(room_id: str, message: dict):
+    """Notify chat room about completed file upload"""
+    try:
+        await chat_manager.broadcast_to_room(room_id, {
+            "type": "new_file_message",
+            "message": message,
+            "timestamp": datetime.utcnow().isoformat()
+        })
+    except Exception as e:
+        print(f"Error notifying chat file completion: {e}")
+
+
+# ✅ EXPORT MANAGERS FOR USE IN OTHER MODULES
+__all__ = ["upload_manager", "chat_manager", "notify_chat_file_progress", "notify_chat_file_complete"]

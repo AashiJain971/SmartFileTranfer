@@ -31,3 +31,6 @@ async def verify_file_integrity(
         return computed_hash.lower() == expected_hash.lower()
     except Exception:
         return False
+
+# Alias for backward compatibility
+calculate_file_hash = compute_file_hash
