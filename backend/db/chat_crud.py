@@ -43,10 +43,14 @@ class ChatCRUD:
     
     @staticmethod
     async def add_room_members(room_id: str, user_ids: List[str], role: str = "member") -> bool:
-        """Add members to a chat room"""
+        """Add users to a chat room"""
         try:
             members_data = [
-                {"room_id": room_id, "user_id": user_id, "role": role}
+                {
+                    "room_id": room_id,
+                    "user_id": user_id,
+                    "role": role
+                }
                 for user_id in user_ids
             ]
             
@@ -54,6 +58,35 @@ class ChatCRUD:
             return result.data is not None and len(result.data) == len(user_ids)
         except Exception as e:
             print(f"Error adding room members: {e}")
+            return False
+    
+    @staticmethod
+    async def add_single_room_member(room_id: str, user_id: str, role: str = "member") -> bool:
+        """Add a single user to a chat room"""
+        try:
+            # Check if user is already a member
+            is_member = await ChatCRUD.is_user_in_room(user_id, room_id)
+            if is_member:
+                print(f"🔧 INFO: User {user_id} is already a member of room {room_id}")
+                return True
+            
+            member_data = {
+                "room_id": room_id,
+                "user_id": user_id,
+                "role": role
+            }
+            
+            result = supabase.table("chat_room_members").insert(member_data).execute()
+            success = result.data is not None and len(result.data) > 0
+            
+            if success:
+                print(f"🔧 SUCCESS: Added user {user_id} to room {room_id}")
+            else:
+                print(f"🔧 ERROR: Failed to add user {user_id} to room {room_id}")
+                
+            return success
+        except Exception as e:
+            print(f"🔧 ERROR: Error adding room member: {e}")
             return False
     
     @staticmethod
@@ -127,10 +160,10 @@ class ChatCRUD:
     
     @staticmethod
     async def is_user_in_room(user_id: str, room_id: str) -> bool:
-        """Check if user is a member of the chat room"""
+        """Check if a user is a member of a chat room"""
         try:
             result = supabase.table("chat_room_members")\
-                .select("id")\
+                .select("user_id")\
                 .eq("user_id", user_id)\
                 .eq("room_id", room_id)\
                 .execute()
@@ -138,6 +171,21 @@ class ChatCRUD:
             return len(result.data) > 0
         except Exception:
             return False
+    
+    @staticmethod
+    async def get_user_role_in_room(user_id: str, room_id: str) -> Optional[str]:
+        """Get a user's role in a chat room"""
+        try:
+            result = supabase.table("chat_room_members")\
+                .select("role")\
+                .eq("user_id", user_id)\
+                .eq("room_id", room_id)\
+                .single()\
+                .execute()
+            
+            return result.data["role"] if result.data else None
+        except Exception:
+            return None
     
     @staticmethod
     async def get_room_member_ids(room_id: str) -> List[str]:
@@ -217,24 +265,48 @@ class ChatCRUD:
     @staticmethod
     async def get_room_messages(room_id: str, limit: int = 50, offset: int = 0) -> List[Dict[str, Any]]:
         """Get messages from a chat room with sender info and reply context"""
+        print(f"🔧 CRUD DEBUG: get_room_messages called for room_id={room_id}, limit={limit}, offset={offset}")
         try:
-            result = supabase.table("messages")\
-                .select("""
-                    *, 
-                    users!sender_id(username), 
-                    reply_to:messages!reply_to_id(id, content, message_type, users!sender_id(username))
-                """)\
-                .eq("room_id", room_id)\
-                .order("created_at", desc=False)\
-                .range(offset, offset + limit - 1)\
-                .execute()
+            print(f"🔧 CRUD DEBUG: Executing Supabase query...")
+            # Add retry logic for timeout issues
+            max_retries = 3
+            for attempt in range(max_retries):
+                try:
+                    result = supabase.table("messages")\
+                        .select("""
+                            *, 
+                            sender:users!sender_id(username), 
+                            reply_to:messages!reply_to_id(
+                                id, 
+                                content, 
+                                message_type, 
+                                sender:users!sender_id(username)
+                            )
+                        """)\
+                        .eq("room_id", room_id)\
+                        .order("created_at", desc=False)\
+                        .range(offset, offset + limit - 1)\
+                        .execute()
+                    break  # Success, exit retry loop
+                except Exception as e:
+                    if "timeout" in str(e).lower() and attempt < max_retries - 1:
+                        print(f"🔧 CRUD WARNING: Query timeout, retrying ({attempt + 1}/{max_retries})...")
+                        import time
+                        time.sleep(1)  # Wait before retry
+                        continue
+                    else:
+                        raise  # Re-raise if not timeout or max retries reached
+            
+            print(f"🔧 CRUD DEBUG: Supabase returned {len(result.data) if result.data else 0} raw messages")
+            if result.data:
+                print(f"🔧 CRUD DEBUG: First raw message: {result.data[0] if result.data else 'None'}")
             
             messages = []
-            for msg in result.data:
+            for i, msg in enumerate(result.data):
                 # Format the message with sender username
                 message = {
                     **msg,
-                    "sender_username": msg["users"]["username"] if msg["users"] else "Unknown"
+                    "sender_username": msg["sender"]["username"] if msg.get("sender") else "Unknown"
                 }
                 
                 # Format reply information if present
@@ -242,14 +314,18 @@ class ChatCRUD:
                     reply = msg["reply_to"]
                     message["reply_to"] = {
                         **reply,
-                        "sender_username": reply["users"]["username"] if reply.get("users") else "Unknown"
+                        "sender_username": reply["sender"]["username"] if reply.get("sender") else "Unknown"
                     }
                 
                 messages.append(message)
+                print(f"🔧 CRUD DEBUG: Processed message {i+1}: ID={message.get('id', 'N/A')}, Content='{message.get('content', 'N/A')[:50]}'")
             
+            print(f"🔧 CRUD DEBUG: Returning {len(messages)} processed messages")
             return messages
         except Exception as e:
-            print(f"Error getting room messages: {e}")
+            print(f"🔧 CRUD ERROR: Error getting room messages: {e}")
+            import traceback
+            print(f"🔧 CRUD ERROR: Traceback: {traceback.format_exc()}")
             return []
     
     @staticmethod
@@ -257,17 +333,18 @@ class ChatCRUD:
         """Get a specific message by ID"""
         try:
             result = supabase.table("messages")\
-                .select("*, users!sender_id(username)")\
+                .select("*, sender:users!sender_id(username)")\
                 .eq("id", message_id)\
                 .single()\
                 .execute()
             
             if result.data:
                 message = result.data
-                message["sender_username"] = message["users"]["username"] if message["users"] else "Unknown"
+                message["sender_username"] = message["sender"]["username"] if message.get("sender") else "Unknown"
                 return message
             return None
-        except Exception:
+        except Exception as e:
+            print(f"🔧 ERROR: get_message_by_id failed: {e}")
             return None
     
     @staticmethod
@@ -275,7 +352,7 @@ class ChatCRUD:
         """Get the last message sent in a room"""
         try:
             result = supabase.table("messages")\
-                .select("*, users!sender_id(username)")\
+                .select("*, sender:users!sender_id(username)")\
                 .eq("room_id", room_id)\
                 .order("created_at", desc=True)\
                 .limit(1)\
@@ -283,10 +360,11 @@ class ChatCRUD:
             
             if result.data and len(result.data) > 0:
                 message = result.data[0]
-                message["sender_username"] = message["users"]["username"] if message["users"] else "Unknown"
+                message["sender_username"] = message["sender"]["username"] if message.get("sender") else "Unknown"
                 return message
             return None
-        except Exception:
+        except Exception as e:
+            print(f"🔧 ERROR: get_last_message_for_room failed: {e}")
             return None
     
     # ✅ MESSAGE STATUS OPERATIONS (READ RECEIPTS)

@@ -209,13 +209,38 @@ async def get_room_messages(
     current_user: dict = Depends(get_current_active_user)
 ):
     """Get messages from a chat room"""
+    print(f"🔧 DEBUG: get_room_messages called for room_id={room_id}, user={current_user['username']}")
     try:
         # Check if user is member of the room
+        print(f"🔧 DEBUG: Checking room membership...")
+        print(f"🔧 DEBUG: Checking membership for user_id={current_user['id']}, room_id={room_id}")
         is_member = await ChatCRUD.is_user_in_room(current_user["id"], room_id)
+        print(f"🔧 DEBUG: Room membership check result: {is_member}")
+        
         if not is_member:
+            print(f"🔧 DEBUG: Membership check failed - querying database directly...")
+            from db.database import supabase
+            debug_result = supabase.table("chat_room_members")\
+                .select("*")\
+                .eq("user_id", current_user["id"])\
+                .eq("room_id", room_id)\
+                .execute()
+            print(f"🔧 DEBUG: Direct query result: {debug_result.data}")
+            
+            # Also check all memberships for this user
+            all_memberships = supabase.table("chat_room_members")\
+                .select("*")\
+                .eq("user_id", current_user["id"])\
+                .execute()
+            print(f"🔧 DEBUG: All memberships for user: {all_memberships.data}")
+        
+        if not is_member:
+            print(f"🔧 DEBUG: ❌ User {current_user['username']} is not a member of room {room_id}")
             raise HTTPException(status_code=403, detail="Not a member of this room")
         
+        print(f"🔧 DEBUG: Fetching messages from CRUD...")
         messages_data = await ChatCRUD.get_room_messages(room_id, limit, offset)
+        print(f"🔧 DEBUG: Retrieved {len(messages_data)} messages from database")
         
         messages = []
         for msg in messages_data:
@@ -277,22 +302,84 @@ async def send_text_message(
     current_user: dict = Depends(get_current_active_user)
 ):
     """Send a text message to a chat room"""
-    print(f"DEBUG: send_text_message called with room_id={room_id}")
-    print(f"DEBUG: Request content: {request.content if hasattr(request, 'content') else 'No content'}")
-    print(f"DEBUG: Request reply_to_id: {request.reply_to_id if hasattr(request, 'reply_to_id') else 'No reply_to_id'}")
+    print(f"🔧 DEBUG: send_text_message called with room_id={room_id}")
+    print(f"🔧 DEBUG: Request content: {request.content if hasattr(request, 'content') else 'No content'}")
+    print(f"🔧 DEBUG: Request reply_to_id: {request.reply_to_id if hasattr(request, 'reply_to_id') else 'No reply_to_id'}")
+    print(f"🔧 DEBUG: Current user: {current_user['username']} (ID: {current_user['id']})")
     try:
         # Check if user is member of the room
         is_member = await ChatCRUD.is_user_in_room(current_user["id"], room_id)
         if not is_member:
             raise HTTPException(status_code=403, detail="Not a member of this room")
         
-        # Send message via CRUD (this will also handle WebSocket broadcasting)
+        # Send message via CRUD 
+        print(f"🔧 DEBUG: About to call ChatCRUD.send_text_message")
         message = await ChatCRUD.send_text_message(
             sender_id=current_user["id"],
             room_id=room_id,
             content=request.content,
             reply_to_id=request.reply_to_id
         )
+        print(f"🔧 DEBUG: Message sent successfully, ID: {message['id']}")
+        
+        # ✅ BROADCAST MESSAGE VIA WEBSOCKET TO ALL ROOM MEMBERS
+        print(f"🔧 DEBUG: Broadcasting message via WebSocket...")
+        try:
+            # Get reply context if exists
+            reply_context = None
+            if request.reply_to_id:
+                reply_msg = await ChatCRUD.get_message_by_id(request.reply_to_id)
+                if reply_msg:
+                    reply_context = {
+                        "id": reply_msg["id"],
+                        "content": reply_msg["content"][:100] + ("..." if len(reply_msg["content"]) > 100 else ""),
+                        "sender_username": reply_msg.get("sender_username", "Unknown"),
+                        "message_type": reply_msg["message_type"]
+                    }
+
+            # Import the WebSocket manager and broadcast function
+            from routers.websocket import chat_manager
+            from models.chat import MessageType
+            from datetime import datetime
+            
+            # Create broadcast message
+            broadcast_message = {
+                "type": "new_message",
+                "message": {
+                    "id": message["id"],
+                    "room_id": room_id,
+                    "sender_id": current_user["id"],
+                    "sender_username": current_user["username"],
+                    "message_type": MessageType.TEXT.value,
+                    "content": request.content,
+                    "reply_to": reply_context,
+                    "created_at": message["created_at"]
+                },
+                "timestamp": datetime.utcnow().isoformat()
+            }
+            
+            # Broadcast to all room members
+            await chat_manager.broadcast_to_room(room_id, broadcast_message)
+            print(f"🔧 DEBUG: ✅ WebSocket broadcast successful")
+            
+            # Mark as delivered for all room members (except sender)
+            member_ids = await ChatCRUD.get_room_member_ids(room_id)
+            for member_id in member_ids:
+                if member_id != current_user["id"]:  # Don't mark as delivered for sender
+                    await ChatCRUD.mark_message_status(message["id"], member_id, "delivered")
+            print(f"🔧 DEBUG: ✅ Message marked as delivered for room members")
+            
+        except Exception as ws_error:
+            print(f"🔧 DEBUG: ❌ WebSocket broadcast failed: {ws_error}")
+            # Don't fail the API call if WebSocket fails
+        
+        # Verify message was stored
+        print(f"🔧 DEBUG: Verifying message storage...")
+        verification = await ChatCRUD.get_message_by_id(message["id"])
+        if verification:
+            print(f"🔧 DEBUG: ✅ Message verification successful: {verification}")
+        else:
+            print(f"🔧 DEBUG: ❌ Message verification failed - message not found in DB")
         
         return {"status": "sent", "message_id": message["id"]}
         
@@ -650,6 +737,37 @@ async def download_chat_file(
 
 
 # ✅ UTILITY ENDPOINTS
+
+@router.post("/rooms/{room_id}/members/{user_id}")
+async def add_user_to_room(
+    room_id: str,
+    user_id: str,
+    current_user: dict = Depends(get_current_active_user)
+):
+    """Add a user to an existing chat room (admin only)"""
+    try:
+        # Check if current user is admin of the room
+        user_role = await ChatCRUD.get_user_role_in_room(current_user["id"], room_id)
+        if user_role != "admin":
+            raise HTTPException(status_code=403, detail="Only room admins can add members")
+        
+        # Check if target user exists
+        target_user = await get_user_by_id(user_id)
+        if not target_user:
+            raise HTTPException(status_code=404, detail="User not found")
+        
+        # Add user to room
+        success = await ChatCRUD.add_single_room_member(room_id, user_id, "member")
+        
+        if success:
+            return {"status": "success", "message": f"User {target_user['username']} added to room"}
+        else:
+            raise HTTPException(status_code=400, detail="Failed to add user to room")
+            
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
 
 @router.get("/rooms/{room_id}/files")
 async def get_room_files(

@@ -181,6 +181,11 @@
             color: #212529;
         }
         
+        .btn-success {
+            background: #28a745;
+            color: white;
+        }
+        
         /* Chat Rooms List */
         .rooms-section {
             flex: 1;
@@ -1165,7 +1170,10 @@
                                 Refresh
                             </button>
                             <button class="btn-small btn-warning" onclick="testMessagesAPI()" title="Test API">
-                                Test
+                                Test API
+                            </button>
+                            <button class="btn-small btn-success" onclick="sendTestMessage()" title="Send Test Message">
+                                Send Test
                             </button>
                             <button class="btn-small btn-secondary" onclick="clearCurrentChatMessages()" title="Clear Messages">
                                 Clear
@@ -1350,6 +1358,7 @@
             
             // WebSocket & Chat
             chatWs: null,
+            roomWs: null,  // Room-specific WebSocket for real-time messaging
             fileWs: null,
             connectionStatus: 'disconnected', // disconnected, connecting, connected
             heartbeatInterval: null,
@@ -2890,13 +2899,41 @@
             }
         }
         
+        // ✅ CONNECT TO GENERAL CHAT WEBSOCKET (FOR INITIAL CONNECTION)
         async function connectChatWebSocket() {
             return new Promise((resolve, reject) => {
-                logSystem('Connecting to chat WebSocket...');
+                // Enhanced authentication check
+                if (!appState.accessToken) {
+                    const error = new Error('No authentication token available');
+                    logSystem('WebSocket connection failed: Not authenticated', 'error');
+                    updateConnectionStatus('disconnected');
+                    reject(error);
+                    return;
+                }
+                
+                if (!appState.user || !appState.user.id) {
+                    const error = new Error('No user information available');
+                    logSystem('WebSocket connection failed: No user data', 'error');
+                    updateConnectionStatus('disconnected');
+                    reject(error);
+                    return;
+                }
+                
+                logSystem('Connecting to general chat WebSocket...', 'info');
+                console.log('WebSocket connection attempt with user:', appState.user.username);
                 updateConnectionStatus('connecting');
                 
                 const wsUrl = `ws://localhost:8000/ws/chat?token=${encodeURIComponent(appState.accessToken)}`;
-                appState.chatWs = new WebSocket(wsUrl);
+                console.log('WebSocket URL:', wsUrl);
+                
+                try {
+                    appState.chatWs = new WebSocket(wsUrl);
+                } catch (error) {
+                    logSystem(`Failed to create WebSocket: ${error.message}`, 'error');
+                    updateConnectionStatus('disconnected');
+                    reject(error);
+                    return;
+                }
                 
                 const timeout = setTimeout(() => {
                     if (appState.chatWs.readyState === WebSocket.CONNECTING) {
@@ -2909,7 +2946,7 @@
                 appState.chatWs.onopen = function() {
                     clearTimeout(timeout);
                     updateConnectionStatus('connected');
-                    logSystem('Chat WebSocket connected successfully', 'success');
+                    logSystem('General chat WebSocket connected successfully', 'success');
                     appState.reconnectAttempts = 0;
                     
                     // Start heartbeat
@@ -2917,29 +2954,85 @@
                     resolve();
                 };
                 
+                // ... rest of the connection handling
                 appState.chatWs.onclose = function(event) {
                     clearTimeout(timeout);
                     updateConnectionStatus('disconnected');
-                    logSystem(`Chat WebSocket disconnected: Code ${event.code} - ${event.reason}`, 'warning');
+                    
+                    let closeReason = event.reason || 'No reason provided';
+                    let shouldReconnect = false;
+                    
+                    // Interpret close codes
+                    switch (event.code) {
+                        case 1000: // Normal closure
+                            logSystem('Chat WebSocket closed normally', 'info');
+                            break;
+                        case 1001: // Going away
+                            logSystem('Chat WebSocket closed: Page is being closed', 'info');
+                            break;
+                        case 1006: // Abnormal closure
+                            logSystem('Chat WebSocket closed unexpectedly (connection lost)', 'warning');
+                            shouldReconnect = true;
+                            break;
+                        case 4001: // Authentication error
+                            logSystem('Chat WebSocket closed: Authentication failed - please login again', 'error');
+                            setTimeout(() => logout(), 2000);
+                            break;
+                        case 4003: // Access denied
+                            logSystem('Chat WebSocket closed: Access denied to room', 'error');
+                            break;
+                        default:
+                            logSystem(`Chat WebSocket disconnected: Code ${event.code} - ${closeReason}`, 'warning');
+                            shouldReconnect = event.code >= 1006; // Reconnect for unexpected closures
+                    }
+                    
+                    console.log('WebSocket close event:', {
+                        code: event.code,
+                        reason: closeReason,
+                        wasClean: event.wasClean
+                    });
                     
                     // Stop heartbeat
                     stopHeartbeat();
                     
-                    // Attempt reconnection
-                    if (appState.reconnectAttempts < appState.maxReconnectAttempts) {
+                    // Attempt reconnection only for recoverable errors
+                    if (shouldReconnect && appState.reconnectAttempts < appState.maxReconnectAttempts) {
+                        const delay = Math.pow(2, appState.reconnectAttempts) * 1000;
                         setTimeout(() => {
                             appState.reconnectAttempts++;
                             logSystem(`Attempting reconnection ${appState.reconnectAttempts}/${appState.maxReconnectAttempts}...`);
-                            connectChatWebSocket();
-                        }, Math.pow(2, appState.reconnectAttempts) * 1000);
-                    } else {
+                            connectChatWebSocket().catch(err => {
+                                logSystem(`Reconnection failed: ${err.message}`, 'error');
+                            });
+                        }, delay);
+                    } else if (appState.reconnectAttempts >= appState.maxReconnectAttempts) {
                         logSystem('Max reconnection attempts reached', 'error');
                     }
                 };
                 
                 appState.chatWs.onerror = function(error) {
                     clearTimeout(timeout);
-                    logSystem(`Chat WebSocket error: ${error}`, 'error');
+                    console.error('WebSocket error details:', error);
+                    console.error('WebSocket readyState:', appState.chatWs.readyState);
+                    console.error('WebSocket URL:', wsUrl);
+                    
+                    let errorMessage = 'Connection failed';
+                    if (error.type) {
+                        errorMessage += ` (${error.type})`;
+                    }
+                    if (error.code) {
+                        errorMessage += ` - Code: ${error.code}`;
+                    }
+                    if (error.reason) {
+                        errorMessage += ` - Reason: ${error.reason}`;
+                    }
+                    
+                    logSystem(`Chat WebSocket error: ${errorMessage}`, 'error');
+                    
+                    // Check if it's an authentication issue
+                    if (appState.chatWs.readyState === WebSocket.CLOSED && !appState.accessToken) {
+                        logSystem('WebSocket error may be due to missing authentication token', 'warning');
+                    }
                 };
                 
                 appState.chatWs.onmessage = function(event) {
@@ -2947,6 +3040,95 @@
                 };
             });
         }
+        
+        // ✅ NEW: CONNECT TO ROOM-SPECIFIC WEBSOCKET FOR REAL-TIME MESSAGING
+        async function connectToRoomWebSocket(roomId) {
+            if (!roomId) return;
+            
+            // Close existing room WebSocket if exists
+            if (appState.roomWs) {
+                appState.roomWs.close();
+                appState.roomWs = null;
+            }
+            
+            return new Promise((resolve, reject) => {
+                if (!appState.accessToken) {
+                    reject(new Error('No authentication token'));
+                    return;
+                }
+                
+                logSystem(`Connecting to room WebSocket: ${roomId}`, 'info');
+                const wsUrl = `ws://localhost:8000/ws/chat/${roomId}?token=${encodeURIComponent(appState.accessToken)}`;
+                console.log('Room WebSocket URL:', wsUrl);
+                
+                try {
+                    appState.roomWs = new WebSocket(wsUrl);
+                } catch (error) {
+                    logSystem(`Failed to create room WebSocket: ${error.message}`, 'error');
+                    reject(error);
+                    return;
+                }
+                
+                const timeout = setTimeout(() => {
+                    if (appState.roomWs.readyState === WebSocket.CONNECTING) {
+                        appState.roomWs.close();
+                        logSystem('Room WebSocket connection timeout', 'error');
+                        reject(new Error('Room connection timeout'));
+                    }
+                }, 5000);
+                
+                appState.roomWs.onopen = function() {
+                    clearTimeout(timeout);
+                    logSystem(`✅ Connected to room ${roomId} for real-time messaging`, 'success');
+                    resolve();
+                };
+                
+                appState.roomWs.onclose = function(event) {
+                    clearTimeout(timeout);
+                    logSystem(`Room WebSocket disconnected: Code ${event.code}`, 'warning');
+                };
+                
+                appState.roomWs.onerror = function(error) {
+                    clearTimeout(timeout);
+                    logSystem(`Room WebSocket error: ${error}`, 'error');
+                };
+                
+                appState.roomWs.onmessage = function(event) {
+                    const data = JSON.parse(event.data);
+                    console.log('Room WebSocket message received:', data);
+                    handleRoomMessage(data);
+                };
+            });
+        }
+        
+        // ✅ HANDLE ROOM-SPECIFIC MESSAGES
+        function handleRoomMessage(data) {
+            switch (data.type) {
+                case 'new_message':
+                case 'message':
+                    console.log('📨 New message received via room WebSocket:', data);
+                    addMessageToChat(data.message || data);
+                    break;
+                case 'new_file_message':
+                case 'file_message':
+                    console.log('📎 New file message received via room WebSocket:', data);
+                    addFileMessageToChat(data.message || data);
+                    break;
+                case 'user_joined':
+                    logSystem(`${data.username} joined the room`, 'info');
+                    break;
+                case 'user_left':
+                    logSystem(`${data.username} left the room`, 'info');
+                    break;
+                case 'typing':
+                    handleTypingIndicator(data);
+                    break;
+                default:
+                    console.log('Room WebSocket message:', data);
+            }
+        }
+        
+
         
         function startHeartbeat() {
             if (appState.heartbeatInterval) {
@@ -3006,18 +3188,7 @@
             }
         }
         
-        function startHeartbeat() {
-            if (appState.heartbeatInterval) {
-                clearInterval(appState.heartbeatInterval);
-            }
-            
-            appState.heartbeatInterval = setInterval(() => {
-                if (appState.chatWs && appState.chatWs.readyState === WebSocket.OPEN) {
-                    appState.chatWs.send(JSON.stringify({ type: 'heartbeat' }));
-                    logSystem('Heartbeat sent', 'heartbeat');
-                }
-            }, 30000); // Every 30 seconds
-        }
+
         
         async function loadChatRooms() {
             try {
@@ -3205,6 +3376,9 @@
             if (room) {
                 updateChatHeader(room);
             }
+            
+            // ✅ CONNECT TO ROOM-SPECIFIC WEBSOCKET FOR REAL-TIME MESSAGES
+            await connectToRoomWebSocket(roomId);
             
             // Load messages for this room
             await loadRoomMessages(roomId);
@@ -4386,6 +4560,30 @@
             }
         }
         
+        async function sendTestMessage() {
+            if (!appState.currentRoom) {
+                alert('No room selected');
+                return;
+            }
+            
+            const testContent = `Test message from frontend - ${new Date().toLocaleTimeString()}`;
+            console.log('Sending test message:', testContent);
+            
+            try {
+                const response = await sendMessage(testContent);
+                if (response) {
+                    console.log('✅ Test message sent successfully');
+                    logSystem(`Test message sent: ${testContent}`, 'success');
+                } else {
+                    console.log('❌ Test message failed');
+                    logSystem('Failed to send test message', 'error');
+                }
+            } catch (error) {
+                console.error('Error sending test message:', error);
+                logSystem(`Test message error: ${error.message}`, 'error');
+            }
+        }
+        
         // Debug function to test API directly
         async function testMessagesAPI() {
             if (!appState.currentRoom) {
@@ -4395,6 +4593,7 @@
             
             console.log('=== DIRECT API TEST ===');
             try {
+                // Test 1: Basic messages API
                 const url = `http://localhost:8000/chat/rooms/${appState.currentRoom}/messages`;
                 console.log('Testing URL:', url);
                 console.log('Authorization header:', `Bearer ${appState.accessToken?.substring(0, 20)}...`);
@@ -4417,6 +4616,49 @@
                     try {
                         const data = JSON.parse(text);
                         console.log('Parsed response data:', data);
+                        
+                        // Test 2: Try to send a test message if no messages exist
+                        if (!data.messages || data.messages.length === 0) {
+                            console.log('--- No messages found, trying to send test message ---');
+                            
+                            const testMessage = {
+                                content: `Test message from API test - ${new Date().toLocaleTimeString()}`,
+                                reply_to_id: null
+                            };
+                            
+                            const sendResponse = await fetch(`http://localhost:8000/chat/rooms/${appState.currentRoom}/messages`, {
+                                method: 'POST',
+                                headers: {
+                                    'Authorization': `Bearer ${appState.accessToken}`,
+                                    'Content-Type': 'application/json'
+                                },
+                                body: JSON.stringify(testMessage)
+                            });
+                            
+                            console.log('Send message response status:', sendResponse.status);
+                            const sendText = await sendResponse.text();
+                            console.log('Send message response:', sendText);
+                            
+                            if (sendResponse.ok) {
+                                console.log('✅ Test message sent successfully');
+                                // Wait and check again
+                                setTimeout(async () => {
+                                    console.log('--- Rechecking messages after send ---');
+                                    const recheckResponse = await fetch(url, {
+                                        method: 'GET',
+                                        headers: {
+                                            'Authorization': `Bearer ${appState.accessToken}`,
+                                            'Content-Type': 'application/json'
+                                        }
+                                    });
+                                    const recheckData = await recheckResponse.json();
+                                    console.log('Messages after sending:', recheckData);
+                                }, 1000);
+                            } else {
+                                console.log('❌ Failed to send test message:', sendText);
+                            }
+                        }
+                        
                         alert(`API Test Success! Found ${data.messages?.length || 0} messages. Check console for details.`);
                     } catch (e) {
                         console.error('JSON parse error:', e);
