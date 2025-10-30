@@ -16,6 +16,14 @@ async def lifespan(app: FastAPI):
     # Startup
     print("Starting Smart File Transfer Backend...")
     
+    # Warm up database connections
+    try:
+        from db.auth_crud import warm_up_database_connections
+        await warm_up_database_connections()
+        print("✅ Database connections warmed up successfully")
+    except Exception as e:
+        print(f"⚠️  Warning: Database warm-up failed: {e}")
+    
     # Clean up any stale uploads from previous runs
     try:
         await chunk_service.cleanup_stale_uploads(max_age_hours=24)

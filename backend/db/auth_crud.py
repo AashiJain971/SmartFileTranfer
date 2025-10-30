@@ -3,21 +3,68 @@ from datetime import datetime, timedelta
 from supabase import create_client
 from config import settings
 from services.auth_service import auth_service
+import asyncio
+import time
 
-# Initialize Supabase client
+# Initialize Supabase client with timeout configuration
 supabase = create_client(settings.SUPABASE_URL, settings.SUPABASE_KEY)
 
-async def get_user_by_id(user_id: str) -> Optional[Dict[str, Any]]:
-    """Get user by ID"""
+async def warm_up_database_connections():
+    """Pre-warm database connections to avoid cold start timeouts"""
     try:
-        result = supabase.table("users").select("*").eq("id", user_id).execute()
+        # Make a simple query to establish connection
+        result = supabase.table("users").select("id").limit(1).execute()
+        print("🔥 Database connection established and warmed up")
         
+        # Pre-warm a few more connections with different queries
+        await asyncio.sleep(0.1)
+        supabase.table("user_sessions").select("id").limit(1).execute()
+        await asyncio.sleep(0.1)
+        
+        return True
+    except Exception as e:
+        print(f"❌ Database warm-up failed: {e}")
+        return False
+
+async def retry_database_operation(operation_func, max_retries=None, delay=None):
+    """Retry database operations on timeout"""
+    if max_retries is None:
+        max_retries = settings.DB_MAX_RETRIES
+    if delay is None:
+        delay = settings.DB_RETRY_DELAY
+        
+    for attempt in range(max_retries):
+        try:
+            return await operation_func()
+        except Exception as e:
+            error_msg = str(e).lower()
+            if ("timeout" in error_msg or "connection" in error_msg or 
+                "read operation timed out" in error_msg or 
+                "network" in error_msg or "unreachable" in error_msg):
+                
+                if attempt < max_retries - 1:
+                    wait_time = delay * (1.5 ** attempt)  # Exponential backoff
+                    wait_time = min(wait_time, 5.0)  # Cap at 5 seconds
+                    print(f"🔄 Database timeout on attempt {attempt + 1}/{max_retries}, retrying in {wait_time:.1f}s...")
+                    await asyncio.sleep(wait_time)
+                    continue
+                else:
+                    print(f"❌ Database operation failed after {max_retries} attempts: {error_msg}")
+            # Re-raise non-timeout errors or final attempt
+            raise e
+
+async def get_user_by_id(user_id: str) -> Optional[Dict[str, Any]]:
+    """Get user by ID with retry logic"""
+    async def _operation():
+        result = supabase.table("users").select("*").eq("id", user_id).execute()
         if result.data:
             return result.data[0]
         return None
-        
+    
+    try:
+        return await retry_database_operation(_operation)
     except Exception as e:
-        print(f"Error getting user by ID: {e}")
+        print(f"❌ Error getting user by ID after retries: {e}")
         return None
 
 async def create_user(user_data: Dict[str, Any]) -> Optional[Dict[str, Any]]:
@@ -39,42 +86,50 @@ async def create_user(user_data: Dict[str, Any]) -> Optional[Dict[str, Any]]:
         return None
 
 async def get_user_by_email(email: str) -> Optional[Dict[str, Any]]:
-    """Get user by email"""
-    try:
+    """Get user by email with retry logic"""
+    async def _operation():
         result = supabase.table("users").select("*").eq("email", email).execute()
-        
         if result.data:
             return result.data[0]
         return None
-        
+    
+    try:
+        return await retry_database_operation(_operation)
     except Exception as e:
-        print(f"Error getting user by email: {e}")
+        print(f"❌ Error getting user by email after retries: {e}")
+        return None
+
+async def get_user_by_email_with_login_retry(email: str) -> Optional[Dict[str, Any]]:
+    """Get user by email with enhanced retry logic specifically for login"""
+    async def _operation():
+        print(f"🔍 Querying user by email: {email[:10]}...")
+        result = supabase.table("users").select("*").eq("email", email).execute()
+        if result.data:
+            print(f"✅ User found for email: {email[:10]}...")
+            return result.data[0]
+        print(f"❌ No user found for email: {email[:10]}...")
+        return None
+    
+    try:
+        # Enhanced retry for login with more attempts and better backoff
+        print(f"🚀 Starting login database query for: {email[:10]}...")
+        return await retry_database_operation(_operation, max_retries=6, delay=0.3)
+    except Exception as e:
+        print(f"❌ Error getting user by email for login after enhanced retries: {e}")
         return None
 
 async def get_user_by_username(username: str) -> Optional[Dict[str, Any]]:
-    """Get user by username"""
-    try:
+    """Get user by username with retry logic"""
+    async def _operation():
         result = supabase.table("users").select("*").eq("username", username).execute()
-        
         if result.data:
             return result.data[0]
         return None
-        
-    except Exception as e:
-        print(f"Error getting user by username: {e}")
-        return None
-
-async def get_user_by_id(user_id: str) -> Optional[Dict[str, Any]]:
-    """Get user by ID"""
+    
     try:
-        result = supabase.table("users").select("*").eq("id", user_id).execute()
-        
-        if result.data:
-            return result.data[0]
-        return None
-        
+        return await retry_database_operation(_operation)
     except Exception as e:
-        print(f"Error getting user by ID: {e}")
+        print(f"❌ Error getting user by username after retries: {e}")
         return None
 
 async def update_last_login(user_id: str):

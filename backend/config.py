@@ -36,6 +36,11 @@ class Settings:
     CHUNK_TIMEOUT: int = int(os.getenv("CHUNK_TIMEOUT", "30"))
     CONCURRENT_UPLOADS: int = int(os.getenv("CONCURRENT_UPLOADS", "3"))
     
+    # Database connection settings
+    DB_TIMEOUT: int = int(os.getenv("DB_TIMEOUT", "10"))  # 10 seconds
+    DB_MAX_RETRIES: int = int(os.getenv("DB_MAX_RETRIES", "5"))
+    DB_RETRY_DELAY: float = float(os.getenv("DB_RETRY_DELAY", "0.5"))  # 500ms
+    
     # Paths
     TEMP_DIR: Path = Path("temp_chunks")
     UPLOAD_DIR: Path = Path("uploaded_files")

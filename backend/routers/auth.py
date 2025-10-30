@@ -9,7 +9,7 @@ from models.auth import (
 )
 from services.auth_service import auth_service
 from db.auth_crud import (
-    create_user, get_user_by_email, get_user_by_username, get_user_by_id,
+    create_user, get_user_by_email, get_user_by_email_with_login_retry, get_user_by_username, get_user_by_id,
     update_last_login, create_user_session, invalidate_user_session,
     create_password_reset_token, verify_reset_token, 
     mark_reset_token_used, update_user_password
@@ -129,8 +129,8 @@ async def login(login_data: UserLogin, request: Request):
                 detail=f"Too many failed login attempts. Try again in {settings.LOGIN_ATTEMPT_TIMEOUT_MINUTES} minutes."
             )
         
-        # Get user
-        user = await get_user_by_email(login_data.email)
+        # Get user with enhanced retry logic for login
+        user = await get_user_by_email_with_login_retry(login_data.email)
         if not user:
             auth_service.record_login_attempt(login_data.email, False)
             raise HTTPException(

@@ -10,6 +10,7 @@ from utils.hash_utils import calculate_file_hash
 import os
 import shutil
 import uuid
+import json
 from datetime import datetime
 
 router = APIRouter(prefix="/chat", tags=["chat"])
@@ -27,17 +28,116 @@ async def create_chat_room(
         if request.type == ChatRoomType.GROUP and not request.name:
             raise HTTPException(status_code=400, detail="Group chats must have a name")
         
+        # ✅ FOR DIRECT CHATS: Check if room already exists between users
+        if request.type == ChatRoomType.DIRECT and request.members:
+            print(f"🔍 Checking for existing direct chat between {current_user['username']} and {request.members}")
+            
+            # Get the other user first
+            member_identifier = request.members[0]
+            other_user = None
+            
+            # Try to find the other user
+            import re
+            uuid_pattern = r'^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'
+            
+            if re.match(uuid_pattern, member_identifier, re.IGNORECASE):
+                try:
+                    other_user = await get_user_by_id(member_identifier)
+                except:
+                    pass
+            
+            if not other_user:
+                try:
+                    other_user = await get_user_by_email(member_identifier)
+                except:
+                    pass
+                    
+            if not other_user:
+                try:
+                    from db.auth_crud import get_user_by_username
+                    other_user = await get_user_by_username(member_identifier)
+                except:
+                    pass
+            
+            if other_user:
+                # Check if direct chat already exists
+                existing_room = await ChatCRUD.find_direct_chat_room(current_user["id"], other_user["id"])
+                if existing_room:
+                    print(f"✅ Found existing direct chat room: {existing_room['id']}")
+                    
+                    # Return existing room with member details
+                    members = await ChatCRUD.get_room_members_detailed(existing_room["id"])
+                    return ChatRoomResponse(
+                        id=existing_room["id"],
+                        name=existing_room["name"],
+                        type=ChatRoomType(existing_room["type"]),
+                        created_by=existing_room["created_by"],
+                        created_by_username=existing_room.get("created_by_username", "Unknown"),
+                        members=[
+                            ChatRoomMember(
+                                user_id=m["user_id"],
+                                username=m["username"],
+                                role=UserRole(m["role"]),
+                                joined_at=m["joined_at"]
+                            ) for m in members
+                        ],
+                        created_at=existing_room["created_at"],
+                        updated_at=existing_room["updated_at"]
+                    )
+                else:
+                    print(f"🆕 No existing direct chat found, creating new room...")
+            else:
+                raise HTTPException(status_code=404, detail=f"User not found: {member_identifier}")
+        
+        # Generate room name if not provided (for direct chats)
+        room_name = request.name
+        if not room_name and request.type == ChatRoomType.DIRECT:
+            # For direct chats, generate name from participants
+            if request.members:
+                member_identifier = request.members[0]
+                
+                # Try to get the other user's name
+                other_user = None
+                import re
+                uuid_pattern = r'^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'
+                
+                if re.match(uuid_pattern, member_identifier, re.IGNORECASE):
+                    try:
+                        other_user = await get_user_by_id(member_identifier)
+                    except:
+                        pass
+                
+                if not other_user:
+                    try:
+                        other_user = await get_user_by_email(member_identifier)
+                    except:
+                        pass
+                        
+                if not other_user:
+                    try:
+                        from db.auth_crud import get_user_by_username
+                        other_user = await get_user_by_username(member_identifier)
+                    except:
+                        pass
+                
+                if other_user:
+                    room_name = f"{current_user['username']} & {other_user['username']}"
+                else:
+                    room_name = f"Direct Chat - {current_user['username']}"
+            else:
+                room_name = f"Direct Chat - {current_user['username']}"
+        
         # Create the room
         room = await ChatCRUD.create_chat_room(
             creator_id=current_user["id"],
             room_type=request.type.value,
-            name=request.name
+            name=room_name
         )
         
         # Add creator as admin
         await ChatCRUD.add_room_members(room["id"], [current_user["id"]], role="admin")
         
-        # Add other members
+        # Add other members with better error handling
         member_ids = []
         for member_identifier in request.members:
             user = None
@@ -46,34 +146,47 @@ async def create_chat_room(
             import re
             uuid_pattern = r'^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'
             
+            print(f"🔍 Looking up user: {member_identifier}")
+            
+            # Try multiple lookup methods with timeout handling
             if re.match(uuid_pattern, member_identifier, re.IGNORECASE):
                 # Try as UUID first
                 try:
                     user = await get_user_by_id(member_identifier)
-                except:
-                    pass
+                    if user:
+                        print(f"✅ Found user by ID: {user['username']}")
+                except Exception as e:
+                    print(f"❌ ID lookup failed: {e}")
             
             if not user:
-                # Try as email
+                # Try as email with timeout handling
                 try:
                     user = await get_user_by_email(member_identifier)
-                except:
-                    pass
+                    if user:
+                        print(f"✅ Found user by email: {user['username']}")
+                except Exception as e:
+                    print(f"❌ Email lookup failed: {e}")
                     
             if not user:
                 # Try as username
                 try:
                     from db.auth_crud import get_user_by_username
                     user = await get_user_by_username(member_identifier)
-                except:
-                    pass
+                    if user:
+                        print(f"✅ Found user by username: {user['username']}")
+                except Exception as e:
+                    print(f"❌ Username lookup failed: {e}")
             
             if user and user["id"] != current_user["id"]:
                 member_ids.append(user["id"])
+                print(f"✅ Added member: {user['username']}")
             elif not user:
+                # More specific error message
+                error_msg = f"User not found or database temporarily unavailable: {member_identifier}"
+                print(f"❌ {error_msg}")
                 raise HTTPException(
                     status_code=404, 
-                    detail=f"User not found: {member_identifier}"
+                    detail=error_msg
                 )
         
         if member_ids:
@@ -84,7 +197,7 @@ async def create_chat_room(
         # Get complete room info for response
         members = await ChatCRUD.get_room_members_detailed(room["id"])
         
-        return ChatRoomResponse(
+        room_response = ChatRoomResponse(
             id=room["id"],
             name=room["name"],
             type=ChatRoomType(room["type"]),
@@ -101,6 +214,42 @@ async def create_chat_room(
             created_at=room["created_at"],
             updated_at=room["updated_at"]
         )
+        
+        # ✅ BROADCAST NEW ROOM TO ALL MEMBERS via General WebSocket
+        try:
+            print(f"📢 Broadcasting new room notification to {len(members)} members...")
+            from routers.websocket import chat_manager
+            from datetime import datetime
+            
+            # Create room notification
+            room_notification = {
+                "type": "new_room",
+                "room": {
+                    "id": room["id"],
+                    "name": room["name"],
+                    "type": room["type"],
+                    "created_by": current_user["username"],
+                    "member_count": len(members)
+                },
+                "timestamp": datetime.utcnow().isoformat()
+            }
+            
+            # Send notification to all room members via general chat WebSocket
+            for member in members:
+                member_id = member["user_id"]
+                if member_id in chat_manager.user_connections:
+                    for room_ws_id, websocket in chat_manager.user_connections[member_id].items():
+                        try:
+                            await websocket.send_text(json.dumps(room_notification))
+                            print(f"✅ Sent room notification to {member['username']}")
+                        except:
+                            print(f"❌ Failed to send room notification to {member['username']}")
+            
+        except Exception as e:
+            print(f"❌ Failed to broadcast room notification: {e}")
+            # Don't fail the request if notification fails
+        
+        return room_response
         
     except HTTPException:
         raise

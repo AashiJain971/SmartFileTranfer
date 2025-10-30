@@ -143,41 +143,69 @@ class ChatConnectionManager:
         print(f"💬 Chat WebSocket disconnected - Room: {room_id}, User: {username}")
     
     async def broadcast_to_room(self, room_id: str, message: dict, exclude_user: str = None):
-        """Send message to all users in a room"""
+        """Send message to all users in a room with better error handling"""
+        print(f"🔊 Broadcasting to room {room_id[:8]}..., message type: {message.get('type')}")
+        print(f"🔍 Room exists in connections: {room_id in self.room_connections}")
+        
         if room_id not in self.room_connections:
+            print(f"❌ Room {room_id[:8]}... not found in connections")
             return
             
+        print(f"👥 Users in room: {list(self.room_connections[room_id].keys())}")
         disconnected_users = []
         sent_count = 0
         
+        total_users = len(self.room_connections[room_id])
+        
         for user_id, websocket in self.room_connections[room_id].items():
             if exclude_user and user_id == exclude_user:
+                print(f"🚫 Excluding sender {user_id[:8]}... from broadcast")
                 continue
                 
             try:
-                await websocket.send_text(json.dumps(message))
-                sent_count += 1
+                # Check if WebSocket is still open before sending
+                if websocket.client_state.value == 1:  # OPEN state
+                    await websocket.send_text(json.dumps(message))
+                    sent_count += 1
+                    print(f"✅ Sent to user {user_id[:8]}...")
+                else:
+                    print(f"❌ WebSocket closed for user {user_id[:8]}..., marking for cleanup")
+                    disconnected_users.append(user_id)
             except Exception as e:
-                print(f"Error sending to user {user_id}: {e}")
+                error_msg = str(e)
+                if "close frame" in error_msg or "ConnectionClosedError" in error_msg:
+                    print(f"❌ WebSocket connection closed for user {user_id[:8]}...")
+                else:
+                    print(f"❌ Error sending to user {user_id[:8]}...: {e}")
                 disconnected_users.append(user_id)
         
         # Clean up disconnected users
         for user_id in disconnected_users:
             self.disconnect_from_room(room_id, user_id)
             
-        print(f"💬 Broadcasted to {sent_count} users in room {room_id}")
+        excluded = 1 if exclude_user else 0
+        print(f"💬 Broadcasted to {sent_count}/{total_users - excluded} users in room {room_id[:8]}... (excluded sender: {bool(exclude_user)})")
     
     async def send_to_user(self, user_id: str, room_id: str, message: dict):
-        """Send message to a specific user in a room"""
+        """Send message to a specific user in a room with error handling"""
         if (user_id in self.user_connections and 
             room_id in self.user_connections[user_id]):
             
             websocket = self.user_connections[user_id][room_id]
             try:
-                await websocket.send_text(json.dumps(message))
-                return True
+                # Check if WebSocket is still open
+                if websocket.client_state.value == 1:  # OPEN state
+                    await websocket.send_text(json.dumps(message))
+                    return True
+                else:
+                    print(f"WebSocket closed for user {user_id}, cleaning up connection")
+                    self.disconnect_from_room(room_id, user_id)
             except Exception as e:
-                print(f"Error sending to user {user_id}: {e}")
+                error_msg = str(e)
+                if "close frame" in error_msg or "ConnectionClosedError" in error_msg:
+                    print(f"WebSocket connection closed for user {user_id}")
+                else:
+                    print(f"❌ Error sending to user {user_id}: {e}")
                 self.disconnect_from_room(room_id, user_id)
         return False
     
@@ -300,12 +328,12 @@ async def websocket_chat_general(websocket: WebSocket, token: str = Query(...)):
             await websocket.close(code=4001, reason="Invalid token")
             return
         
-        # Get user info
+        # Get user info with retry logic
         from db.auth_crud import get_user_by_id
         user = await get_user_by_id(user_id)
         if not user:
-            print(f"User {user_id} not found in database")
-            await websocket.close(code=4001, reason="User not found")
+            print(f"User {user_id} not found in database after retries")
+            await websocket.close(code=4001, reason="User not found or database unavailable")
             return
         
         print(f"WebSocket authentication successful for user: {user.get('username')}")
@@ -313,36 +341,52 @@ async def websocket_chat_general(websocket: WebSocket, token: str = Query(...)):
         await websocket.accept()
         username = user.get("username", "Unknown")
         
-        # Send connection confirmation
-        await websocket.send_text(json.dumps({
-            "type": "connected",
-            "user_id": user_id,
-            "username": username,
-            "message": "Connected to chat system",
-            "timestamp": datetime.utcnow().isoformat()
-        }))
+        # Send connection confirmation with error handling
+        try:
+            await websocket.send_text(json.dumps({
+                "type": "connected",
+                "user_id": user_id,
+                "username": username,
+                "message": "Connected to chat system",
+                "timestamp": datetime.utcnow().isoformat()
+            }))
+        except Exception as e:
+            print(f"Failed to send connection confirmation: {e}")
+            return
         
         try:
             while True:
-                # ✅ RECEIVE AND HANDLE CLIENT MESSAGES
-                data = await websocket.receive_text()
-                message_data = json.loads(data)
-                
-                message_type = message_data.get("type")
-                
-                if message_type == "ping":
-                    await websocket.send_text(json.dumps({
-                        "type": "pong",
-                        "timestamp": datetime.utcnow().isoformat()
-                    }))
-                elif message_type == "heartbeat":
-                    await websocket.send_text(json.dumps({
-                        "type": "heartbeat_ack",
-                        "timestamp": datetime.utcnow().isoformat()
-                    }))
+                # ✅ RECEIVE AND HANDLE CLIENT MESSAGES WITH TIMEOUT
+                try:
+                    data = await asyncio.wait_for(websocket.receive_text(), timeout=60.0)
+                    message_data = json.loads(data)
                     
+                    message_type = message_data.get("type")
+                    
+                    if message_type == "ping":
+                        await websocket.send_text(json.dumps({
+                            "type": "pong",
+                            "timestamp": datetime.utcnow().isoformat()
+                        }))
+                    elif message_type == "heartbeat":
+                        await websocket.send_text(json.dumps({
+                            "type": "heartbeat_ack",
+                            "timestamp": datetime.utcnow().isoformat()
+                        }))
+                        
+                except asyncio.TimeoutError:
+                    # Check if connection is still alive
+                    try:
+                        await websocket.send_text(json.dumps({
+                            "type": "server_ping",
+                            "timestamp": datetime.utcnow().isoformat()
+                        }))
+                    except:
+                        # Connection is dead, break loop
+                        break
+                        
         except WebSocketDisconnect:
-            pass
+            print("General Chat WebSocket disconnected normally")
         except Exception as e:
             print(f"General Chat WebSocket error: {e}")
             
@@ -375,69 +419,144 @@ async def websocket_chat_endpoint(websocket: WebSocket, room_id: str, token: str
             await websocket.close(code=4001, reason="Invalid token")
             return
         
-        # Get user info
+        # Get user info with retry logic
         from db.auth_crud import get_user_by_id
         user = await get_user_by_id(user_id)
         if not user:
-            await websocket.close(code=4001, reason="User not found")
+            await websocket.close(code=4001, reason="User not found or database unavailable")
             return
         
-        # ✅ CHECK ROOM MEMBERSHIP
-        is_member = await ChatCRUD.is_user_in_room(user_id, room_id)
-        if not is_member:
-            await websocket.close(code=4003, reason="Not a member of this room")
-            return
-        
-        # ✅ CONNECT TO CHAT ROOM
+        # ✅ GET USERNAME FIRST BEFORE USING IT
         username = user.get("username", "Unknown")
-        await chat_manager.connect_to_room(websocket, room_id, user_id, username)
+        
+        # ✅ CHECK ROOM MEMBERSHIP WITH DETAILED DEBUGGING
+        try:
+            print(f"🔍 Checking room membership: User {username} ({user_id[:8]}...) -> Room {room_id[:8]}...")
+            is_member = await ChatCRUD.is_user_in_room(user_id, room_id)
+            print(f"🔍 Membership result: {is_member}")
+            
+            if not is_member:
+                print(f"❌ Access denied: {username} is not a member of room {room_id[:8]}...")
+                await websocket.close(code=4003, reason="Not a member of this room")
+                return
+            else:
+                print(f"✅ Access granted: {username} is a member of room {room_id[:8]}...")
+        except Exception as e:
+            print(f"❌ Error checking room membership: {e}")
+            await websocket.close(code=4000, reason="Database error checking room access")
+            return
+        
+        # ✅ ACCEPT WEBSOCKET CONNECTION FIRST
+        await websocket.accept()
+        
+        # ✅ CONNECT TO CHAT ROOM (without accepting again)
+        # username already defined above
+        
+        # Add connection to manager manually (since connect_to_room accepts again)
+        # Initialize room if it doesn't exist
+        if room_id not in chat_manager.room_connections:
+            chat_manager.room_connections[room_id] = {}
+        
+        # Initialize user connections if it doesn't exist
+        if user_id not in chat_manager.user_connections:
+            chat_manager.user_connections[user_id] = {}
+            
+        # Add connection
+        chat_manager.room_connections[room_id][user_id] = websocket
+        chat_manager.user_connections[user_id][room_id] = websocket
+        
+        # Update user status
+        chat_manager.user_status[user_id] = {
+            "status": "online",
+            "last_seen": datetime.utcnow(),
+            "username": username
+        }
+        
+        print(f"💬 Chat WebSocket connected - Room: {room_id}, User: {username}")
         
         # Send connection confirmation with room info
-        online_users = await chat_manager.get_online_users_in_room(room_id)
-        await websocket.send_text(json.dumps({
-            "type": "connected",
-            "room_id": room_id,
-            "user_id": user_id,
-            "username": username,
-            "online_users": online_users,
-            "timestamp": datetime.utcnow().isoformat()
-        }))
-        
         try:
-            while True:
-                # ✅ RECEIVE AND HANDLE CLIENT MESSAGES
-                data = await websocket.receive_text()
-                message_data = json.loads(data)
-                
-                message_type = message_data.get("type")
-                
-                if message_type == "text_message":
-                    await handle_text_message(room_id, user_id, username, message_data)
-                elif message_type == "typing":
-                    await handle_typing_indicator(room_id, user_id, username, message_data)
-                elif message_type == "read_receipt":
-                    await handle_read_receipt(room_id, user_id, message_data)
-                elif message_type == "ping":
-                    await websocket.send_text(json.dumps({
-                        "type": "pong",
-                        "timestamp": datetime.utcnow().isoformat()
-                    }))
-                    
-        except WebSocketDisconnect:
-            pass
-        except Exception as e:
-            print(f"Chat WebSocket error: {e}")
-        finally:
-            # ✅ CLEAN UP CONNECTION
-            chat_manager.disconnect_from_room(room_id, user_id)
+            online_users = await chat_manager.get_online_users_in_room(room_id)
+            await websocket.send_text(json.dumps({
+                "type": "connected",
+                "room_id": room_id,
+                "user_id": user_id,
+                "username": username,
+                "online_users": online_users,
+                "timestamp": datetime.utcnow().isoformat()
+            }))
             
-            # Notify others that user left
+            # Notify others in the room that user joined
             await chat_manager.broadcast_to_room(room_id, {
-                "type": "user_left",
+                "type": "user_joined",
                 "user_id": user_id,
                 "username": username,
                 "timestamp": datetime.utcnow().isoformat()
-            })
+            }, exclude_user=user_id)
+            
+        except Exception as e:
+            print(f"❌ Failed to send room connection confirmation: {e}")
+            return
+        
+        try:
+            while True:
+                # ✅ RECEIVE AND HANDLE CLIENT MESSAGES WITH TIMEOUT
+                try:
+                    data = await asyncio.wait_for(websocket.receive_text(), timeout=60.0)
+                    message_data = json.loads(data)
+                    
+                    message_type = message_data.get("type")
+                    print(f"📨 WebSocket message received: {message_type} from {username}")
+                    
+                    if message_type == "text_message":
+                        print(f"💬 Processing text message: {message_data.get('content', '')[:50]}...")
+                        await handle_text_message(room_id, user_id, username, message_data)
+                    elif message_type == "typing":
+                        await handle_typing_indicator(room_id, user_id, username, message_data)
+                    elif message_type == "read_receipt":
+                        await handle_read_receipt(room_id, user_id, message_data)
+                    elif message_type == "ping":
+                        try:
+                            await websocket.send_text(json.dumps({
+                                "type": "pong",
+                                "timestamp": datetime.utcnow().isoformat()
+                            }))
+                        except:
+                            # Connection is dead
+                            break
+                    else:
+                        print(f"❓ Unknown message type: {message_type}")
+                            
+                except asyncio.TimeoutError:
+                    # Check if connection is still alive with server ping
+                    try:
+                        await websocket.send_text(json.dumps({
+                            "type": "server_ping",
+                            "timestamp": datetime.utcnow().isoformat()
+                        }))
+                    except:
+                        # Connection is dead, break loop
+                        print(f"💬 Room WebSocket timeout - connection lost for user {username} in room {room_id}")
+                        break
+                        
+        except WebSocketDisconnect:
+            print(f"💬 Room WebSocket disconnected normally - user {username} left room {room_id}")
+        except Exception as e:
+            print(f"💬 Room WebSocket error for user {username} in room {room_id}: {e}")
+        finally:
+            # ✅ CLEAN UP CONNECTION
+            try:
+                chat_manager.disconnect_from_room(room_id, user_id)
+                
+                # Notify others that user left
+                await chat_manager.broadcast_to_room(room_id, {
+                    "type": "user_left",
+                    "user_id": user_id,
+                    "username": username,
+                    "timestamp": datetime.utcnow().isoformat()
+                })
+            except Exception as e:
+                print(f"❌ Error during WebSocket cleanup: {e}")
             
     except Exception as e:
         print(f"Chat WebSocket connection error: {e}")

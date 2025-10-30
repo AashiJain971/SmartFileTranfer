@@ -22,12 +22,13 @@ async def get_current_user(credentials: HTTPAuthorizationCredentials = Depends(s
                 detail="Invalid token"
             )
         
-        # Get user from database
+        # Get user from database with retry logic
         user = await get_user_by_id(user_id)
         if not user:
+            # If database timeout, return a more specific error
             raise HTTPException(
-                status_code=status.HTTP_401_UNAUTHORIZED,
-                detail="User not found"
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="Database temporarily unavailable, please try again"
             )
         
         if not user.get("is_active"):
@@ -41,6 +42,13 @@ async def get_current_user(credentials: HTTPAuthorizationCredentials = Depends(s
     except HTTPException:
         raise
     except Exception as e:
+        print(f"🚨 Authentication error: {e}")
+        # Check if it's a database timeout
+        if "timeout" in str(e).lower():
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="Database temporarily unavailable, please try again"
+            )
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Could not validate credentials"

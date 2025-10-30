@@ -42,6 +42,77 @@ class ChatCRUD:
             return None
     
     @staticmethod
+    async def find_direct_chat_room(user1_id: str, user2_id: str) -> Optional[Dict[str, Any]]:
+        """Find existing direct chat room between two users"""
+        try:
+            print(f"🔍 Looking for direct chat between {user1_id[:8]}... and {user2_id[:8]}...")
+            
+            # Get all direct rooms where user1 is a member
+            user1_rooms_result = supabase.table("chat_room_members")\
+                .select("room_id")\
+                .eq("user_id", user1_id)\
+                .execute()
+            
+            if not user1_rooms_result.data:
+                print("❌ User1 has no rooms")
+                return None
+                
+            user1_room_ids = [r["room_id"] for r in user1_rooms_result.data]
+            print(f"🏠 User1 has {len(user1_room_ids)} rooms")
+            
+            # Get all direct rooms where user2 is a member
+            user2_rooms_result = supabase.table("chat_room_members")\
+                .select("room_id")\
+                .eq("user_id", user2_id)\
+                .execute()
+            
+            if not user2_rooms_result.data:
+                print("❌ User2 has no rooms")
+                return None
+                
+            user2_room_ids = [r["room_id"] for r in user2_rooms_result.data]
+            print(f"🏠 User2 has {len(user2_room_ids)} rooms")
+            
+            # Find common room IDs
+            common_room_ids = set(user1_room_ids).intersection(set(user2_room_ids))
+            print(f"🔗 Found {len(common_room_ids)} common rooms")
+            
+            if not common_room_ids:
+                return None
+            
+            # Check which of the common rooms are direct chats with exactly 2 members
+            for room_id in common_room_ids:
+                print(f"🔍 Checking room {room_id[:8]}...")
+                
+                # Get room details
+                room_result = supabase.table("chat_rooms")\
+                    .select("*, users!created_by(username)")\
+                    .eq("id", room_id)\
+                    .eq("type", "direct")\
+                    .single()\
+                    .execute()
+                
+                if room_result.data:
+                    # Count members in this room
+                    members_result = supabase.table("chat_room_members")\
+                        .select("user_id")\
+                        .eq("room_id", room_id)\
+                        .execute()
+                    
+                    if len(members_result.data) == 2:
+                        print(f"✅ Found direct chat room: {room_id[:8]}...")
+                        room_data = room_result.data
+                        room_data["created_by_username"] = room_data.get("users", {}).get("username", "Unknown")
+                        return room_data
+            
+            print("❌ No direct chat rooms found")
+            return None
+            
+        except Exception as e:
+            print(f"❌ Error finding direct chat room: {e}")
+            return None
+
+    @staticmethod
     async def add_room_members(room_id: str, user_ids: List[str], role: str = "member") -> bool:
         """Add users to a chat room"""
         try:
@@ -162,14 +233,34 @@ class ChatCRUD:
     async def is_user_in_room(user_id: str, room_id: str) -> bool:
         """Check if a user is a member of a chat room"""
         try:
-            result = supabase.table("chat_room_members")\
-                .select("user_id")\
-                .eq("user_id", user_id)\
-                .eq("room_id", room_id)\
-                .execute()
+            print(f"🔧 CRUD DEBUG: Checking membership for user_id={user_id}, room_id={room_id}")
             
-            return len(result.data) > 0
-        except Exception:
+            # Add retry logic similar to other functions
+            max_retries = 3
+            for attempt in range(max_retries):
+                try:
+                    result = supabase.table("chat_room_members")\
+                        .select("user_id")\
+                        .eq("user_id", user_id)\
+                        .eq("room_id", room_id)\
+                        .execute()
+                    
+                    is_member = len(result.data) > 0
+                    print(f"🔧 CRUD DEBUG: Membership check result: {is_member} (found {len(result.data)} records)")
+                    return is_member
+                    
+                except Exception as e:
+                    if "timeout" in str(e).lower() and attempt < max_retries - 1:
+                        print(f"🔧 CRUD WARNING: Membership check timeout, retrying ({attempt + 1}/{max_retries})...")
+                        import time
+                        time.sleep(0.5)
+                        continue
+                    else:
+                        print(f"🔧 CRUD ERROR: Membership check failed: {e}")
+                        raise
+                        
+        except Exception as e:
+            print(f"🔧 CRUD ERROR: is_user_in_room failed completely: {e}")
             return False
     
     @staticmethod
@@ -268,45 +359,61 @@ class ChatCRUD:
         print(f"🔧 CRUD DEBUG: get_room_messages called for room_id={room_id}, limit={limit}, offset={offset}")
         try:
             print(f"🔧 CRUD DEBUG: Executing Supabase query...")
-            # Add retry logic for timeout issues
-            max_retries = 3
+            # Add retry logic for timeout issues with faster recovery
+            max_retries = 5
             for attempt in range(max_retries):
                 try:
+                    # First try a simple count query to warm up the connection
+                    if attempt == 0:
+                        print(f"🔧 CRUD DEBUG: Warming up connection...")
+                        try:
+                            count_result = supabase.table("messages")\
+                                .select("id", count="exact")\
+                                .eq("room_id", room_id)\
+                                .limit(1)\
+                                .execute()
+                            print(f"🔧 CRUD DEBUG: Connection warmed up successfully")
+                        except:
+                            print(f"🔧 CRUD WARNING: Connection warmup failed, proceeding anyway...")
+                    
+                    # Main query with extended join syntax
+                    print(f"🔧 CRUD DEBUG: Executing main query (attempt {attempt + 1})...")
                     result = supabase.table("messages")\
-                        .select("""
-                            *, 
-                            sender:users!sender_id(username), 
-                            reply_to:messages!reply_to_id(
-                                id, 
-                                content, 
-                                message_type, 
-                                sender:users!sender_id(username)
-                            )
-                        """)\
+                        .select("*, sender:users(username)")\
                         .eq("room_id", room_id)\
                         .order("created_at", desc=False)\
                         .range(offset, offset + limit - 1)\
                         .execute()
+                    
+                    print(f"🔧 CRUD DEBUG: Query succeeded on attempt {attempt + 1}")
                     break  # Success, exit retry loop
+                    
                 except Exception as e:
-                    if "timeout" in str(e).lower() and attempt < max_retries - 1:
-                        print(f"🔧 CRUD WARNING: Query timeout, retrying ({attempt + 1}/{max_retries})...")
+                    if ("timeout" in str(e).lower() or "read operation timed out" in str(e).lower()) and attempt < max_retries - 1:
+                        wait_time = 0.5 * (attempt + 1)  # Exponential backoff
+                        print(f"🔧 CRUD WARNING: Query timeout, retrying in {wait_time}s ({attempt + 1}/{max_retries})...")
                         import time
-                        time.sleep(1)  # Wait before retry
+                        time.sleep(wait_time)
                         continue
                     else:
+                        print(f"🔧 CRUD ERROR: Query failed permanently: {e}")
                         raise  # Re-raise if not timeout or max retries reached
             
             print(f"🔧 CRUD DEBUG: Supabase returned {len(result.data) if result.data else 0} raw messages")
             if result.data:
-                print(f"🔧 CRUD DEBUG: First raw message: {result.data[0] if result.data else 'None'}")
+                print(f"🔧 CRUD DEBUG: First raw message keys: {list(result.data[0].keys()) if result.data else 'None'}")
+                print(f"🔧 CRUD DEBUG: Sender data: {result.data[0].get('sender') if result.data else 'None'}")
             
             messages = []
             for i, msg in enumerate(result.data):
+                # Debug sender information
+                sender_info = msg.get("sender")
+                print(f"🔧 CRUD DEBUG: Message {i} sender info: {sender_info}")
+                
                 # Format the message with sender username
                 message = {
                     **msg,
-                    "sender_username": msg["sender"]["username"] if msg.get("sender") else "Unknown"
+                    "sender_username": sender_info["username"] if sender_info and isinstance(sender_info, dict) else "Unknown"
                 }
                 
                 # Format reply information if present
