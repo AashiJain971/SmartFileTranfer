@@ -1,0 +1,16 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <title>SmartFileTransfer - Favicon</title>
+</head>
+<body style="margin: 0; padding: 0; background: #25d366;">
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16" width="16" height="16" style="display: block;">
+        <rect width="16" height="16" fill="#25d366"/>
+        <!-- Simple file transfer icon -->
+        <rect x="2" y="4" width="4" height="5" rx="0.5" fill="#fff"/>
+        <path d="M6 6.5 L10 6.5 M8 5 L10 6.5 L8 8" stroke="#fff" stroke-width="0.8" fill="none" stroke-linecap="round"/>
+        <rect x="10" y="7" width="4" height="5" rx="0.5" fill="#fff"/>
+    </svg>
+</body>
+</html>

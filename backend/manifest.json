@@ -1,0 +1,27 @@
+{
+  "name": "SmartFileTransfer",
+  "short_name": "FileTransfer",
+  "description": "Real-time file transfer and chat application",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#25d366",
+  "theme_color": "#25d366",
+  "orientation": "portrait-primary",
+  "icons": [
+    {
+      "src": "/favicon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any maskable"
+    },
+    {
+      "src": "/apple-touch-icon.png",
+      "sizes": "180x180",
+      "type": "image/png",
+      "purpose": "any"
+    }
+  ],
+  "categories": ["productivity", "utilities"],
+  "lang": "en",
+  "dir": "ltr"
+}

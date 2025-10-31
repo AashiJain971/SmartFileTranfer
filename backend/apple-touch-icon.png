@@ -1,0 +1,33 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 180 180" width="180" height="180">
+  <defs>
+    <linearGradient id="grad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" style="stop-color:#25d366;stop-opacity:1" />
+      <stop offset="100%" style="stop-color:#128c7e;stop-opacity:1" />
+    </linearGradient>
+  </defs>
+  
+  <!-- Background with rounded corners for iOS -->
+  <rect width="180" height="180" rx="40" fill="url(#grad)"/>
+  
+  <!-- File transfer icon - scaled up -->
+  <!-- Document 1 -->
+  <rect x="35" y="50" width="45" height="55" rx="5" fill="#fff" opacity="0.95"/>
+  <rect x="42" y="62" width="31" height="4" fill="#128c7e"/>
+  <rect x="42" y="72" width="23" height="4" fill="#128c7e"/>
+  <rect x="42" y="82" width="28" height="4" fill="#128c7e"/>
+  <rect x="42" y="92" width="20" height="4" fill="#128c7e"/>
+  
+  <!-- Arrow -->
+  <path d="M85 77 L115 77 M105 67 L115 77 L105 87" stroke="#fff" stroke-width="6" fill="none" stroke-linecap="round" stroke-linejoin="round"/>
+  
+  <!-- Document 2 -->
+  <rect x="100" y="75" width="45" height="55" rx="5" fill="#fff" opacity="0.95"/>
+  <rect x="107" y="87" width="31" height="4" fill="#25d366"/>
+  <rect x="107" y="97" width="23" height="4" fill="#25d366"/>
+  <rect x="107" y="107" width="28" height="4" fill="#25d366"/>
+  <rect x="107" y="117" width="20" height="4" fill="#25d366"/>
+  
+  <!-- Small decorative elements -->
+  <circle cx="45" cy="140" r="3" fill="#fff" opacity="0.7"/>
+  <circle cx="135" cy="45" r="3" fill="#fff" opacity="0.7"/>
+</svg>

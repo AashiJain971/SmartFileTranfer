@@ -8,6 +8,26 @@ from models.chat import MessageType, ChatRoomType, MessageStatus, UserRole
 class ChatCRUD:
     """CRUD operations for chat functionality integrated with existing file system"""
     
+    # ✅ CONNECTION UTILITIES
+    
+    @staticmethod
+    async def _warm_connection():
+        """Warm up database connection to prevent initial timeouts"""
+        try:
+            import asyncio
+            
+            async def ping_db():
+                # Simple ping query to warm up connection
+                result = supabase.table("users").select("id").limit(1).execute()
+                return result
+            
+            # Quick 2-second timeout for warm-up
+            await asyncio.wait_for(ping_db(), timeout=2.0)
+            
+        except Exception as e:
+            # Don't fail if warm-up fails, just log it
+            print(f"🔧 CRUD WARNING: Connection warm-up failed (continuing anyway): {e}")
+    
     # ✅ CHAT ROOM OPERATIONS
     
     @staticmethod
@@ -231,29 +251,56 @@ class ChatCRUD:
     
     @staticmethod
     async def is_user_in_room(user_id: str, room_id: str) -> bool:
-        """Check if a user is a member of a chat room"""
+        """Check if a user is a member of a chat room with improved timeout handling"""
         try:
             print(f"🔧 CRUD DEBUG: Checking membership for user_id={user_id}, room_id={room_id}")
             
-            # Add retry logic similar to other functions
-            max_retries = 3
+            # Warm up connection first
+            try:
+                print(f"🔧 CRUD DEBUG: Warming up connection...")
+                await ChatCRUD._warm_connection()
+                print(f"🔧 CRUD DEBUG: Connection warmed up successfully")
+            except Exception as warm_error:
+                print(f"🔧 CRUD WARNING: Connection warm-up failed: {warm_error}")
+            
+            # Enhanced retry logic with exponential backoff
+            max_retries = 5
             for attempt in range(max_retries):
                 try:
-                    result = supabase.table("chat_room_members")\
-                        .select("user_id")\
-                        .eq("user_id", user_id)\
-                        .eq("room_id", room_id)\
-                        .execute()
+                    import asyncio
+                    
+                    # Use asyncio timeout for better control
+                    async def check_membership():
+                        result = supabase.table("chat_room_members")\
+                            .select("user_id")\
+                            .eq("user_id", user_id)\
+                            .eq("room_id", room_id)\
+                            .execute()
+                        return result
+                    
+                    # 5 second timeout per attempt
+                    result = await asyncio.wait_for(check_membership(), timeout=5.0)
                     
                     is_member = len(result.data) > 0
                     print(f"🔧 CRUD DEBUG: Membership check result: {is_member} (found {len(result.data)} records)")
                     return is_member
                     
+                except asyncio.TimeoutError:
+                    if attempt < max_retries - 1:
+                        wait_time = min(2 ** attempt, 5)  # Exponential backoff, max 5 seconds
+                        print(f"🔧 CRUD WARNING: Membership check timeout, retrying in {wait_time}s ({attempt + 1}/{max_retries})...")
+                        await asyncio.sleep(wait_time)
+                        continue
+                    else:
+                        print(f"🔧 CRUD ERROR: Membership check timeout after all retries")
+                        raise Exception("Database timeout - membership check failed")
+                        
                 except Exception as e:
                     if "timeout" in str(e).lower() and attempt < max_retries - 1:
-                        print(f"🔧 CRUD WARNING: Membership check timeout, retrying ({attempt + 1}/{max_retries})...")
-                        import time
-                        time.sleep(0.5)
+                        wait_time = min(2 ** attempt, 5)
+                        print(f"🔧 CRUD WARNING: Membership check error, retrying in {wait_time}s ({attempt + 1}/{max_retries}): {e}")
+                        import asyncio
+                        await asyncio.sleep(wait_time)
                         continue
                     else:
                         print(f"🔧 CRUD ERROR: Membership check failed: {e}")
@@ -261,6 +308,7 @@ class ChatCRUD:
                         
         except Exception as e:
             print(f"🔧 CRUD ERROR: is_user_in_room failed completely: {e}")
+            # Return False on timeout to prevent access, but don't crash
             return False
     
     @staticmethod
