@@ -474,7 +474,7 @@ async def websocket_chat_endpoint(websocket: WebSocket, room_id: str, token: str
         
         print(f"💬 Chat WebSocket connected - Room: {room_id}, User: {username}")
         
-        # Send connection confirmation with room info
+        # Send connection confirmation with room info (non-fatal if this send fails)
         try:
             online_users = await chat_manager.get_online_users_in_room(room_id)
             await websocket.send_text(json.dumps({
@@ -495,8 +495,10 @@ async def websocket_chat_endpoint(websocket: WebSocket, room_id: str, token: str
             }, exclude_user=user_id)
             
         except Exception as e:
+            # Don't abort the connection if the confirmation send fails.
+            # Some clients open the socket and immediately switch state; keep the loop running.
             print(f"❌ Failed to send room connection confirmation: {e}")
-            return
+            # Continue to receive loop so the connection remains usable
         
         try:
             while True:

@@ -4621,25 +4621,29 @@
                     return;
                 }
                 
-                // Add the new message to the current room with enhanced UI feedback
+                // Create smooth real-time message appearance like WhatsApp
                 const messageElement = createMessageElement(message);
+                
+                // Start with message slightly hidden and positioned
                 messageElement.style.opacity = '0';
-                messageElement.style.transform = 'translateY(10px)';
+                messageElement.style.transform = 'translateY(20px) scale(0.95)';
+                messageElement.style.transition = 'all 0.4s cubic-bezier(0.25, 0.46, 0.45, 0.94)';
+                
+                // Add to container
                 messagesContainer.appendChild(messageElement);
                 
-                // Animate the new message appearing
-                setTimeout(() => {
-                    messageElement.style.transition = 'all 0.3s ease-out';
+                // Natural message slide-in animation
+                requestAnimationFrame(() => {
                     messageElement.style.opacity = '1';
-                    messageElement.style.transform = 'translateY(0)';
-                }, 10);
+                    messageElement.style.transform = 'translateY(0) scale(1)';
+                });
                 
-                // Auto-scroll to new message with enhanced scrolling
+                // Auto-scroll with real-time chat flow (older messages scroll up)
+                // Always snap to bottom so the newest message sits just above the input bar
                 setTimeout(() => {
-                    scrollToBottomSmooth();
-                    // Flash scroll indicator briefly
-                    console.log('🔄 Auto-scrolled to new message');
-                }, 100);
+                    scrollToBottom();
+                    console.log('🔄 Real-time message added - older messages scrolled up to keep newest visible');
+                }, 50);
                 
                 // Update local message store
                 if (!appState.messages.has(message.room_id)) {
@@ -5563,28 +5567,40 @@
         function scrollToBottomSmooth() {
             const container = document.getElementById('messagesContainer');
             if (container) {
-                // Enhanced smooth scrolling for new messages
+                // Enhanced smooth scrolling for real-time chat experience
                 const targetScrollTop = container.scrollHeight - container.clientHeight;
                 
-                // Check if user is near the bottom (within 100px) - only auto-scroll if they are
-                const isNearBottom = container.scrollTop >= (targetScrollTop - 100);
+                // Check if user is near the bottom (within 150px) - more generous for mobile
+                const isNearBottom = container.scrollTop >= (targetScrollTop - 150);
                 
                 if (isNearBottom) {
-                    // Smooth scroll animation
-                    container.scrollTo({
-                        top: container.scrollHeight,
-                        behavior: 'smooth'
-                    });
+                    // Real-time chat auto-scroll: push older messages up naturally
+                    const currentScrollTop = container.scrollTop;
+                    const scrollHeight = container.scrollHeight;
                     
-                    // Backup scroll for last message
-                    setTimeout(() => {
+                    // Immediate scroll to bottom for real-time feel
+                    container.scrollTop = container.scrollHeight;
+                    
+                    // Add slight animation for natural message flow
+                    container.style.scrollBehavior = 'smooth';
+                    
+                    // Ensure we're at the very bottom
+                    requestAnimationFrame(() => {
+                        container.scrollTop = container.scrollHeight;
+                        
+                        // Focus on last message to ensure visibility
                         const lastMessage = container.lastElementChild;
                         if (lastMessage) {
-                            lastMessage.scrollIntoView({ behavior: 'smooth', block: 'end', inline: 'nearest' });
+                            // Ensure the last message is fully visible
+                            lastMessage.scrollIntoView({ 
+                                behavior: 'smooth', 
+                                block: 'end', 
+                                inline: 'nearest' 
+                            });
                         }
-                    }, 100);
+                    });
                 } else {
-                    // User is scrolled up, show notification instead of auto-scrolling
+                    // User is scrolled up viewing history, show notification
                     showNewMessageNotification();
                 }
             }
