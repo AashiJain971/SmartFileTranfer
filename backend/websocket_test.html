@@ -5468,13 +5468,16 @@
             
             let totalChunks = file ? Math.ceil(file.size / chunkSize) : 0;
             
+            // Calculate actual chunk size (for small files, chunk size = file size)
+            let actualChunkSize = file && totalChunks === 1 ? file.size : chunkSize;
+            
             // Update network status
             statusText.textContent = appState.networkQuality !== 'unknown' 
                 ? `${appState.networkQuality} (${Math.round(appState.networkLatency)}ms)` 
                 : 'Unknown';
             
             suggestedChunkSize.textContent = file 
-                ? `${formatBytes(chunkSize)} (${totalChunks} chunk${totalChunks === 1 ? '' : 's'})` 
+                ? `${formatBytes(actualChunkSize)} (${totalChunks} chunk${totalChunks === 1 ? '' : 's'})` 
                 : 'Calculating...';
             
             // Update file info
@@ -5484,7 +5487,7 @@
                     <p><strong>Size:</strong> ${formatBytes(file.size)}</p>
                     <p><strong>Type:</strong> ${file.type || 'Unknown'}</p>
                     <p><strong>Network:</strong> ${appState.networkQuality} (${Math.round(appState.networkLatency)}ms)</p>
-                    <p><strong>Chunks:</strong> ${totalChunks} x ${formatBytes(chunkSize)} each</p>
+                    <p><strong>Chunks:</strong> ${totalChunks} x ${formatBytes(actualChunkSize)} each</p>
                 `;
                 fileInfo.style.display = 'block';
                 startBtn.disabled = false;
