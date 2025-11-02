@@ -1,0 +1,10 @@
+{
+	"version": "2.0.0",
+	"tasks": [
+		{
+			"label": "Backup websocket_test.html",
+			"type": "shell",
+			"command": "cp backend/websocket_test.html backend/websocket_test.backup.$(date +%s).html"
+		}
+	]
+}

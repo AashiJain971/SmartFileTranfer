@@ -424,13 +424,12 @@ class ChatCRUD:
                         except:
                             print(f"🔧 CRUD WARNING: Connection warmup failed, proceeding anyway...")
                     
-                    # Main query with extended join syntax
-                    print(f"🔧 CRUD DEBUG: Executing main query (attempt {attempt + 1})...")
+                    # Main query with extended join syntax (no limit, fetch all)
+                    print(f"🔧 CRUD DEBUG: Executing main query (attempt {attempt + 1}) (NO LIMIT)...")
                     result = supabase.table("messages")\
                         .select("*, sender:users(username)")\
                         .eq("room_id", room_id)\
                         .order("created_at", desc=False)\
-                        .range(offset, offset + limit - 1)\
                         .execute()
                     
                     print(f"🔧 CRUD DEBUG: Query succeeded on attempt {attempt + 1}")
@@ -473,7 +472,16 @@ class ChatCRUD:
                     }
                 
                 messages.append(message)
-                print(f"🔧 CRUD DEBUG: Processed message {i+1}: ID={message.get('id', 'N/A')}, Content='{message.get('content', 'N/A')[:50]}'")
+                # Safe preview: handle None for file messages and non-string types
+                try:
+                    preview_raw = message.get('content')
+                    if preview_raw in (None, ''):
+                        # For file messages, prefer file_name; otherwise empty
+                        preview_raw = message.get('file_name') or ''
+                    preview = str(preview_raw)[:50]
+                except Exception:
+                    preview = ''
+                print(f"🔧 CRUD DEBUG: Processed message {i+1}: ID={message.get('id', 'N/A')}, Content='{preview}'")
             
             print(f"🔧 CRUD DEBUG: Returning {len(messages)} processed messages")
             return messages
