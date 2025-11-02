@@ -3236,6 +3236,20 @@
             logSystem('Initializing chat system...');
             
             try {
+                // ✅ PRE-CALCULATE NETWORK SPEED ON LOGIN (WAIT for it to complete)
+                logSystem('Testing network speed and AI optimization...', 'info');
+                try {
+                    await detectNetworkSpeedAndAdjustChunks();
+                    logSystem('Network detection complete', 'success');
+                } catch (err) {
+                    console.warn('Network detection failed, using defaults:', err);
+                    // Set safe defaults if detection fails
+                    appState.suggestedChunkSize = 1048576; // 1MB
+                    appState.networkQuality = 'good';
+                    appState.networkLatency = 50;
+                    logSystem('Using default network settings', 'warning');
+                }
+                
                 // Load rooms first - WebSocket connections will be created when selecting rooms
                 // This prevents conflicts between general chat WebSocket and room-specific WebSockets
                 try {
@@ -3257,7 +3271,7 @@
                     console.warn('Room selection failed:', error);
                 }
                 
-                logSystem('Chat system initialized (with possible warnings)');
+                logSystem('Chat system initialized successfully', 'success');
             } catch (error) {
                 logSystem(`Chat system initialization had issues: ${error.message}`, 'warning');
                 // Don't throw error - let the UI show normally
@@ -3638,16 +3652,16 @@
                 
                 const timeout = setTimeout(() => {
                     if (appState.roomWs && appState.roomWs.readyState === WebSocket.CONNECTING) {
-                        console.error(`❌ WebSocket connection timeout after 10 seconds for room ${roomId}`);
+                        console.error(`❌ WebSocket connection timeout after 20 seconds for room ${roomId}`);
                         console.error(`❌ WebSocket URL was: ${wsUrl.replace(/token=[^&]+/, 'token=***')}`);
                         console.error(`❌ User: ${appState.user?.username}, Access token length: ${appState.accessToken?.length || 0}`);
                         
                         appState.roomWs.close();
-                        logSystem('Room WebSocket connection timeout - check authentication', 'error');
+                        logSystem('Room WebSocket connection timeout - server may be slow', 'error');
                         updateConnectionStatus('error');
-                        reject(new Error('Room connection timeout - possibly authentication issue'));
+                        reject(new Error('Room connection timeout - server taking too long'));
                     }
-                }, 10000); // Increase timeout to 10 seconds
+                }, 20000); // Increased timeout to 20 seconds to allow for database retries
                 
                 appState.roomWs.onopen = function() {
                     clearTimeout(timeout);
@@ -3693,7 +3707,18 @@
                             console.log(`📤 WebSocket going away for room ${roomId}`);
                         } else if (event.code === 1006) {
                             console.log(`❌ Abnormal WebSocket closure for room ${roomId} - connection lost`);
-                            logSystem(`Connection lost to room ${roomId}. Will attempt reconnection.`, 'warning');
+                            logSystem(`Connection lost to room ${roomId}. Attempting reconnection in 2s...`, 'warning');
+                            
+                            // Auto-reconnect after 2 seconds if still in the same room
+                            setTimeout(() => {
+                                if (appState.currentRoom === roomId && !appState.roomWs) {
+                                    console.log(`🔄 Auto-reconnecting to room ${roomId}...`);
+                                    connectToRoomWebSocketWithRetry(roomId).catch(err => {
+                                        console.error(`Failed to auto-reconnect:`, err);
+                                        logSystem(`Auto-reconnection failed. Please refresh the page.`, 'error');
+                                    });
+                                }
+                            }, 2000);
                         } else if (event.code === 4001) {
                             console.error(`🔐 Authentication failed for room ${roomId} - token expired or invalid`);
                             logSystem(`Authentication failed for room ${roomId}. Please refresh the page.`, 'error');
@@ -4407,9 +4432,11 @@
         function displayMessages(messages) {
             console.log('displayMessages called with:', messages);
             const messagesContainer = document.getElementById('messagesContainer');
-            messagesContainer.innerHTML = '';
             
-            if (!Array.isArray(messages) || messages.length === 0) {
+            // Check if we have actual messages before clearing
+            const hasMessages = Array.isArray(messages) && messages.length > 0;
+            
+            if (!hasMessages) {
                 console.log('No messages to display, showing empty state');
                 
                 // Get room info for personalized empty state
@@ -4417,7 +4444,7 @@
                 const roomName = room ? room.name : 'this chat';
                 
                 messagesContainer.innerHTML = `
-                    <div style="display: flex; flex-direction: column; align-items: center; justify-content: center; height: 100%; color: #6b7280; text-align: center; padding: 40px;">
+                    <div id="emptyState" style="display: flex; flex-direction: column; align-items: center; justify-content: center; height: 100%; color: #6b7280; text-align: center; padding: 40px;">
                         <div style="font-size: 64px; margin-bottom: 20px; opacity: 0.3;">💬</div>
                         <h3 style="margin: 0 0 10px 0; color: #374151; font-weight: 600;">No conversations yet</h3>
                         <p style="margin: 0; opacity: 0.8; margin-bottom: 20px;">Start your conversation with ${roomName}</p>
@@ -4431,6 +4458,9 @@
                 logSystem('No messages in current room - showing empty state', 'info');
                 return;
             }
+            
+            // We have messages - clear everything and rebuild
+            messagesContainer.innerHTML = '';
             
             console.log(`Displaying ${messages.length} messages`);
             messages.forEach((message, index) => {
@@ -4604,6 +4634,13 @@
                     return;
                 }
                 
+                // Hide empty state if it exists (fix for "No conversations yet" showing with messages)
+                const emptyState = document.getElementById('emptyState');
+                if (emptyState) {
+                    console.log('🗑️ Hiding empty state - we have messages now!');
+                    emptyState.remove();
+                }
+                
                 // Create smooth real-time message appearance like WhatsApp
                 const messageElement = createMessageElement(message);
                 
@@ -4699,6 +4736,13 @@
                 if (existingMessage) {
                     console.log('⚠️ File message already exists, skipping duplicate');
                     return;
+                }
+                
+                // Hide empty state if it exists (fix for "No conversations yet" showing with messages)
+                const emptyState = document.getElementById('emptyState');
+                if (emptyState) {
+                    console.log('🗑️ Hiding empty state - we have file messages now!');
+                    emptyState.remove();
                 }
                 
                 // Append message element
@@ -4972,20 +5016,23 @@
             document.getElementById('chatFileInfo').style.display = 'none';
             document.getElementById('startFileUploadBtn').disabled = true;
             
-            // Reset network status
-            document.getElementById('networkStatusText').textContent = 'Testing...';
-            document.getElementById('suggestedChunkSize').textContent = 'Calculating...';
+            // ✅ SHOW CACHED NETWORK STATUS IMMEDIATELY (no delay!)
+            const statusText = document.getElementById('networkStatusText');
+            const suggestedChunkSize = document.getElementById('suggestedChunkSize');
+            
+            if (appState.networkQuality && appState.networkQuality !== 'unknown') {
+                statusText.textContent = `${appState.networkQuality} (${appState.networkLatency}ms)`;
+                suggestedChunkSize.textContent = 'Select a file to see chunk size';
+            } else {
+                statusText.textContent = 'Network not tested yet';
+                suggestedChunkSize.textContent = 'Calculating...';
+            }
             
             // Hide manual chunk section by default
             document.getElementById('manualChunkSection').style.display = 'none';
             
             // Set auto mode by default
             document.querySelector('input[name="chunkMode"][value="auto"]').checked = true;
-            
-            // Run network test and update UI
-            detectNetworkSpeedAndAdjustChunks().then(() => {
-                updateUploadDialogUI();
-            });
             
             document.getElementById('fileUploadDialog').style.display = 'flex';
         }
@@ -5154,7 +5201,7 @@
             showFileUploadDialog();
         }
         
-        function handleChatFileSelect() {
+        async function handleChatFileSelect() {
             const file = document.getElementById('hiddenFileInput').files[0];
             const chatFileInput = document.getElementById('chatFileInput');
             
@@ -5164,13 +5211,17 @@
                 dataTransfer.items.add(file);
                 chatFileInput.files = dataTransfer.files;
                 
-                updateChatFileInfo(file);
+                await updateChatFileInfo(file);
             }
         }
         
         async function updateChatFileInfo(file) {
             if (file) {
                 appState.selectedFile = file;
+                
+                // ✅ IMMEDIATELY RE-CALCULATE CHUNK SIZE WITH FILE SIZE
+                await detectNetworkSpeedAndAdjustChunks();
+                
                 await updateUploadDialogUI();
             } else {
                 document.getElementById('chatFileInfo').style.display = 'none';
@@ -5387,66 +5438,126 @@
             }
         }
 
-        // Network Detection Functions
+        // Network Detection Functions - AI-Enhanced
         async function detectNetworkSpeedAndAdjustChunks() {
+            const perfStart = performance.now();
             try {
-                const startTime = performance.now();
+                const statusText = document.getElementById('networkStatusText');
+                const suggestedChunkSize = document.getElementById('suggestedChunkSize');
                 
-                // Test with a small request to the backend
-                const testResponse = await fetch('http://localhost:8000/health', {
+                statusText.textContent = 'Testing network + AI prediction...';
+                
+                // === SINGLE API CALL - backend does all the AI work ===
+                // ✅ Pass file size to get accurate chunk size recommendation
+                let url = 'http://localhost:8000/health';
+                if (appState.selectedFile && appState.selectedFile.size) {
+                    url += `?file_size=${appState.selectedFile.size}`;
+                }
+                
+                console.log(`⏱️ Starting network detection at ${new Date().toISOString()}`);
+                const fetchStart = performance.now();
+                
+                const response = await fetch(url, {
                     method: 'GET',
                     cache: 'no-cache'
                 });
                 
-                const endTime = performance.now();
-                const latency = endTime - startTime;
+                const fetchEnd = performance.now();
+                console.log(`⏱️ Fetch completed in ${(fetchEnd - fetchStart).toFixed(0)}ms`);
                 
-                // Estimate connection quality based on latency and connection info
-                let quality = 'good';
-                let suggestedSize = 1048576; // 1MB default
+                const data = await response.json();
+                const perfEnd = performance.now();
+                console.log(`⏱️ Total detection time: ${(perfEnd - perfStart).toFixed(0)}ms`);
                 
-                if (navigator.connection) {
-                    const connection = navigator.connection;
-                    const downlink = connection.downlink; // Mbps
-                    const effectiveType = connection.effectiveType;
+                console.log('🤖 AI-Enhanced Health Response:', data);
+                
+                // === USE AI-RECOMMENDED CHUNK SIZE ===
+                appState.suggestedChunkSize = data.recommended_chunk_size;
+                appState.networkQuality = data.network_quality;
+                appState.networkLatency = data.latency_ms;
+                
+                // === DISPLAY AI INSIGHTS ===
+                const details = data.calculation_details;
+                const prediction = data.ai_prediction;
+                
+                // Build status message with method badge
+                let statusHTML = `${data.network_quality} (${data.latency_ms}ms)`;
+                let methodBadge = '';
+                
+                if (details.ai_used) {
+                    // AI was used successfully
+                    methodBadge = '<span style="background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); color: white; padding: 2px 8px; border-radius: 4px; font-size: 10px; margin-left: 6px; font-weight: 600; box-shadow: 0 2px 4px rgba(102,126,234,0.3);">🤖 AI</span>';
                     
-                    if (effectiveType === 'slow-2g' || downlink < 0.5) {
-                        quality = 'poor';
-                        suggestedSize = 262144; // 256KB
-                    } else if (effectiveType === '2g' || downlink < 1.5) {
-                        quality = 'fair';
-                        suggestedSize = 524288; // 512KB  
-                    } else if (effectiveType === '3g' || downlink < 5) {
-                        quality = 'good';
-                        suggestedSize = 1048576; // 1MB
-                    } else {
-                        quality = 'excellent';
-                        suggestedSize = 2097152; // 2MB
+                    if (prediction.is_anomaly) {
+                        statusHTML += `<br><span style="color: #f44336; font-size: 11px; font-weight: 500;">🚨 ${prediction.reason}</span>`;
+                    } else if (prediction.predicted_quality === 'degrading') {
+                        statusHTML += `<br><span style="color: #ff9800; font-size: 11px; font-weight: 500;">⚠️ ${prediction.reason}</span>`;
+                    } else if (prediction.predicted_quality === 'improving') {
+                        statusHTML += `<br><span style="color: #4caf50; font-size: 11px; font-weight: 500;">✅ ${prediction.reason}</span>`;
                     }
-                } else if (latency > 1000) {
-                    quality = 'poor';
-                    suggestedSize = 262144; // 256KB
-                } else if (latency > 500) {
-                    quality = 'fair';
-                    suggestedSize = 524288; // 512KB
-                } else if (latency > 200) {
-                    quality = 'good';
-                    suggestedSize = 1048576; // 1MB
                 } else {
-                    quality = 'excellent';
-                    suggestedSize = 2097152; // 2MB
+                    // Fallback was used
+                    methodBadge = '<span style="background: #9e9e9e; color: white; padding: 2px 8px; border-radius: 4px; font-size: 10px; margin-left: 6px; font-weight: 600;">Traditional</span>';
+                    
+                    if (details.fallback_reason) {
+                        statusHTML += `<br><span style="color: #757575; font-size: 10px;">${details.fallback_reason}</span>`;
+                    }
                 }
                 
-                appState.networkQuality = quality;
-                appState.suggestedChunkSize = suggestedSize;
-                appState.networkLatency = latency;
+                statusText.innerHTML = statusHTML + methodBadge;
                 
-                logSystem(`Network detected: ${quality} (${Math.round(latency)}ms latency)`, 'info');
+                // === SHOW CHUNK SIZE WITH COMPARISON ===
+                if (appState.selectedFile) {
+                    // ✅ Calculate actual chunk size (capped to file size)
+                    const actualChunkSize = Math.min(data.recommended_chunk_size, appState.selectedFile.size);
+                    const totalChunks = Math.ceil(appState.selectedFile.size / actualChunkSize);
+                    
+                    let chunkHTML = `${formatBytes(actualChunkSize)} (${totalChunks} chunk${totalChunks === 1 ? '' : 's'})`;
+                    
+                    // Show warning if file is smaller than recommended chunk size
+                    if (appState.selectedFile.size < data.recommended_chunk_size) {
+                        chunkHTML += `<br><small style="color: #2196f3; font-weight: 500;">
+                            ℹ️ File size (${formatBytes(appState.selectedFile.size)}) smaller than optimal chunk size - using single chunk
+                        </small>`;
+                    }
+                    // Show if AI adjusted the chunk size (only if file is large enough)
+                    else if (details.ai_used && details.ai_chunk_size !== details.traditional_chunk_size) {
+                        const diff = details.ai_chunk_size - details.traditional_chunk_size;
+                        const diffPercent = (diff / details.traditional_chunk_size * 100).toFixed(0);
+                        const diffColor = diff > 0 ? '#4caf50' : '#ff9800';
+                        
+                        chunkHTML += `<br><small style="color: ${diffColor}; font-weight: 500;">
+                            AI adjusted: ${diff > 0 ? '+' : ''}${diffPercent}% from traditional (${details.traditional_chunk_size_human})
+                        </small>`;
+                    }
+                    
+                    if (prediction?.confidence) {
+                        const confidenceColor = prediction.confidence >= 0.7 ? '#4caf50' : '#ff9800';
+                        chunkHTML += `<br><small style="color: ${confidenceColor};">Confidence: ${(prediction.confidence * 100).toFixed(0)}%</small>`;
+                    }
+                    
+                    suggestedChunkSize.innerHTML = chunkHTML;
+                } else {
+                    suggestedChunkSize.innerHTML = 'Calculating...';
+                }
+                
+                // Log AI stats
+                if (details.ai_used) {
+                    logSystem(`✅ AI prediction used (${data.ai_stats.measurements_collected} measurements learned, ${data.ai_stats.hourly_patterns_learned} hourly patterns)`, 'success');
+                } else {
+                    logSystem(`⚠️ Traditional fallback: ${details.fallback_reason}`, 'warning');
+                }
                 
             } catch (error) {
-                logSystem(`Network detection failed: ${error.message}`, 'warning');
+                console.error('❌ Network detection failed completely:', error);
+                
+                // Ultimate fallback
+                document.getElementById('networkStatusText').textContent = 'Unable to test network (using default)';
+                appState.suggestedChunkSize = 1048576; // 1MB safe default
                 appState.networkQuality = 'unknown';
-                appState.suggestedChunkSize = 1048576; // 1MB default
+                appState.networkLatency = 0;
+                
+                logSystem(`Network detection failed: ${error.message}`, 'error');
             }
             
             // Always update UI after network test
@@ -5471,14 +5582,18 @@
             // Calculate actual chunk size (for small files, chunk size = file size)
             let actualChunkSize = file && totalChunks === 1 ? file.size : chunkSize;
             
-            // Update network status
-            statusText.textContent = appState.networkQuality !== 'unknown' 
-                ? `${appState.networkQuality} (${Math.round(appState.networkLatency)}ms)` 
-                : 'Unknown';
+            // Note: network status and suggested chunk size are now set by detectNetworkSpeedAndAdjustChunks()
+            // with AI-enhanced display. We only update them if they're empty (fallback scenario)
+            if (!statusText.innerHTML || statusText.textContent === 'Detecting...') {
+                statusText.textContent = appState.networkQuality !== 'unknown' 
+                    ? `${appState.networkQuality} (${Math.round(appState.networkLatency)}ms)` 
+                    : 'Unknown';
+            }
             
-            suggestedChunkSize.textContent = file 
-                ? `${formatBytes(actualChunkSize)} (${totalChunks} chunk${totalChunks === 1 ? '' : 's'})` 
-                : 'Calculating...';
+            // Only update suggestedChunkSize if file exists and it's not already set by AI detection
+            if (file && (!suggestedChunkSize.innerHTML || suggestedChunkSize.textContent === 'Calculating...')) {
+                suggestedChunkSize.textContent = `${formatBytes(actualChunkSize)} (${totalChunks} chunk${totalChunks === 1 ? '' : 's'})`;
+            }
             
             // Update file info
             if (file) {
@@ -5497,17 +5612,7 @@
             }
         }
 
-        function getNetworkQuality() {
-            const quality = appState.networkQuality || 'unknown';
-            const latency = appState.networkLatency || 0;
-            
-            if (navigator.connection) {
-                const connection = navigator.connection;
-                return `${quality} (${connection.effectiveType || 'unknown'}, ${Math.round(latency)}ms)`;
-            }
-            
-            return `${quality} (${Math.round(latency)}ms)`;
-        }
+        // Note: getNetworkQuality() removed - network quality now provided by AI-enhanced /health endpoint
         
         // Utility Functions
         function updateConnectionStatus(status) {

@@ -419,32 +419,64 @@ async def websocket_chat_endpoint(websocket: WebSocket, room_id: str, token: str
             await websocket.close(code=4001, reason="Invalid token")
             return
         
-        # Get user info with retry logic
+        # Get user info with aggressive retry logic
         from db.auth_crud import get_user_by_id
-        user = await get_user_by_id(user_id)
+        user = None
+        max_retries = 3
+        for attempt in range(max_retries):
+            try:
+                user = await asyncio.wait_for(get_user_by_id(user_id), timeout=3.0)
+                if user:
+                    break
+                print(f"⚠️ User query returned None on attempt {attempt + 1}/{max_retries}")
+            except asyncio.TimeoutError:
+                print(f"⏱️ Database timeout on attempt {attempt + 1}/{max_retries}")
+                if attempt < max_retries - 1:
+                    await asyncio.sleep(0.3)  # Brief delay before retry
+            except Exception as e:
+                print(f"❌ Database error on attempt {attempt + 1}/{max_retries}: {e}")
+                if attempt < max_retries - 1:
+                    await asyncio.sleep(0.3)
+        
         if not user:
+            print(f"❌ Failed to get user {user_id} after {max_retries} attempts")
             await websocket.close(code=4001, reason="User not found or database unavailable")
             return
         
         # ✅ GET USERNAME FIRST BEFORE USING IT
-        username = user.get("username", "Unknown")
+        username = user.get("username", f"User-{user_id[:8]}")
         
-        # ✅ CHECK ROOM MEMBERSHIP WITH DETAILED DEBUGGING
-        try:
-            print(f"🔍 Checking room membership: User {username} ({user_id[:8]}...) -> Room {room_id[:8]}...")
-            is_member = await ChatCRUD.is_user_in_room(user_id, room_id)
-            print(f"🔍 Membership result: {is_member}")
-            
-            if not is_member:
-                print(f"❌ Access denied: {username} is not a member of room {room_id[:8]}...")
-                await websocket.close(code=4003, reason="Not a member of this room")
-                return
-            else:
-                print(f"✅ Access granted: {username} is a member of room {room_id[:8]}...")
-        except Exception as e:
-            print(f"❌ Error checking room membership: {e}")
-            await websocket.close(code=4000, reason="Database error checking room access")
+        # ✅ CHECK ROOM MEMBERSHIP WITH RETRY LOGIC
+        is_member = False
+        max_membership_retries = 3
+        for attempt in range(max_membership_retries):
+            try:
+                print(f"🔍 Checking room membership (attempt {attempt + 1}/{max_membership_retries}): User {username} ({user_id[:8]}...) -> Room {room_id[:8]}...")
+                is_member = await asyncio.wait_for(
+                    ChatCRUD.is_user_in_room(user_id, room_id),
+                    timeout=3.0
+                )
+                print(f"🔍 Membership result: {is_member}")
+                break  # Success, exit retry loop
+            except asyncio.TimeoutError:
+                print(f"⏱️ Room membership check timeout on attempt {attempt + 1}/{max_membership_retries}")
+                if attempt < max_membership_retries - 1:
+                    await asyncio.sleep(0.3)
+            except Exception as e:
+                print(f"❌ Error checking room membership on attempt {attempt + 1}/{max_membership_retries}: {e}")
+                if attempt < max_membership_retries - 1:
+                    await asyncio.sleep(0.3)
+                else:
+                    # Last attempt failed, close connection
+                    await websocket.close(code=4000, reason="Database error checking room access")
+                    return
+        
+        if not is_member:
+            print(f"❌ Access denied: {username} is not a member of room {room_id[:8]}...")
+            await websocket.close(code=4003, reason="Not a member of this room")
             return
+        else:
+            print(f"✅ Access granted: {username} is a member of room {room_id[:8]}...")
         
         # ✅ ACCEPT WEBSOCKET CONNECTION FIRST
         await websocket.accept()
@@ -474,31 +506,35 @@ async def websocket_chat_endpoint(websocket: WebSocket, room_id: str, token: str
         
         print(f"💬 Chat WebSocket connected - Room: {room_id}, User: {username}")
         
-        # Send connection confirmation with room info (non-fatal if this send fails)
-        try:
-            online_users = await chat_manager.get_online_users_in_room(room_id)
-            await websocket.send_text(json.dumps({
-                "type": "connected",
-                "room_id": room_id,
-                "user_id": user_id,
-                "username": username,
-                "online_users": online_users,
-                "timestamp": datetime.utcnow().isoformat()
-            }))
-            
-            # Notify others in the room that user joined
-            await chat_manager.broadcast_to_room(room_id, {
-                "type": "user_joined",
-                "user_id": user_id,
-                "username": username,
-                "timestamp": datetime.utcnow().isoformat()
-            }, exclude_user=user_id)
-            
-        except Exception as e:
-            # Don't abort the connection if the confirmation send fails.
-            # Some clients open the socket and immediately switch state; keep the loop running.
-            print(f"❌ Failed to send room connection confirmation: {e}")
-            # Continue to receive loop so the connection remains usable
+        # Send connection confirmation with room info (completely non-fatal)
+        # Use asyncio.create_task to avoid blocking on send failures
+        async def send_connection_confirmation():
+            try:
+                online_users = await chat_manager.get_online_users_in_room(room_id)
+                await websocket.send_text(json.dumps({
+                    "type": "connected",
+                    "room_id": room_id,
+                    "user_id": user_id,
+                    "username": username,
+                    "online_users": online_users,
+                    "timestamp": datetime.utcnow().isoformat()
+                }))
+                print(f"✅ Sent connection confirmation to {username} in room {room_id[:8]}...")
+                
+                # Notify others in the room that user joined
+                await chat_manager.broadcast_to_room(room_id, {
+                    "type": "user_joined",
+                    "user_id": user_id,
+                    "username": username,
+                    "timestamp": datetime.utcnow().isoformat()
+                }, exclude_user=user_id)
+                
+            except Exception as e:
+                # Silently fail - connection will stay alive anyway
+                print(f"⚠️ Failed to send connection confirmation (non-fatal): {e}")
+        
+        # Fire and forget - don't wait for confirmation to be sent
+        asyncio.create_task(send_connection_confirmation())
         
         try:
             while True:
