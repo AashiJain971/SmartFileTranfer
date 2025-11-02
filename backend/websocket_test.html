@@ -4569,7 +4569,8 @@
             const downloadBtn = document.createElement('button');
             downloadBtn.className = 'btn-small btn-primary';
             downloadBtn.textContent = '⬇️ Download';
-            downloadBtn.onclick = () => downloadFile(message.file_path, message.file_name);
+            // Use message ID for download, not file path
+            downloadBtn.onclick = () => downloadFile(message.id, message.file_name);
             
             fileActions.appendChild(downloadBtn);
             
@@ -4966,8 +4967,25 @@
                 return;
             }
             
-            // Test network speed for smart chunking
-            detectNetworkSpeedAndAdjustChunks();
+            // Reset file input and info
+            document.getElementById('chatFileInput').value = '';
+            document.getElementById('chatFileInfo').style.display = 'none';
+            document.getElementById('startFileUploadBtn').disabled = true;
+            
+            // Reset network status
+            document.getElementById('networkStatusText').textContent = 'Testing...';
+            document.getElementById('suggestedChunkSize').textContent = 'Calculating...';
+            
+            // Hide manual chunk section by default
+            document.getElementById('manualChunkSection').style.display = 'none';
+            
+            // Set auto mode by default
+            document.querySelector('input[name="chunkMode"][value="auto"]').checked = true;
+            
+            // Run network test and update UI
+            detectNetworkSpeedAndAdjustChunks().then(() => {
+                updateUploadDialogUI();
+            });
             
             document.getElementById('fileUploadDialog').style.display = 'flex';
         }
@@ -5151,38 +5169,12 @@
         }
         
         async function updateChatFileInfo(file) {
-            const fileInfo = document.getElementById('chatFileInfo');
-            const startBtn = document.getElementById('startFileUploadBtn');
-            
             if (file) {
                 appState.selectedFile = file;
-                
-                // Detect network speed and adjust suggested chunk size
-                await detectNetworkSpeedAndAdjustChunks();
-                
-                const chunkSize = document.querySelector('input[name="chunkMode"]:checked').value === 'auto' 
-                    ? appState.suggestedChunkSize 
-                    : parseInt(document.getElementById('manualChunkSize').value);
-                
-                const totalChunks = Math.ceil(file.size / chunkSize);
-                const networkQuality = getNetworkQuality();
-                
-                fileInfo.innerHTML = `
-                    <h4>File: ${file.name}</h4>
-                    <p><strong>Size:</strong> ${formatBytes(file.size)}</p>
-                    <p><strong>Type:</strong> ${file.type || 'Unknown'}</p>
-                    <p><strong>Network:</strong> ${networkQuality}</p>
-                    <p><strong>Chunks:</strong> ${totalChunks} x ${formatBytes(chunkSize)} each</p>
-                `;
-                
-                // Update suggested chunk size display
-                document.getElementById('suggestedChunkSize').textContent = 
-                    `${formatBytes(appState.suggestedChunkSize)} (${Math.ceil(file.size / appState.suggestedChunkSize)} chunks)`;
-                fileInfo.style.display = 'block';
-                startBtn.disabled = false;
+                await updateUploadDialogUI();
             } else {
-                fileInfo.style.display = 'none';
-                startBtn.disabled = true;
+                document.getElementById('chatFileInfo').style.display = 'none';
+                document.getElementById('startFileUploadBtn').disabled = true;
             }
         }
         
@@ -5455,6 +5447,50 @@
                 logSystem(`Network detection failed: ${error.message}`, 'warning');
                 appState.networkQuality = 'unknown';
                 appState.suggestedChunkSize = 1048576; // 1MB default
+            }
+            
+            // Always update UI after network test
+            updateUploadDialogUI();
+        }
+        
+        // Update all upload dialog UI fields based on current state and file
+        async function updateUploadDialogUI() {
+            const file = appState.selectedFile;
+            const fileInfo = document.getElementById('chatFileInfo');
+            const startBtn = document.getElementById('startFileUploadBtn');
+            const statusText = document.getElementById('networkStatusText');
+            const suggestedChunkSize = document.getElementById('suggestedChunkSize');
+            
+            const chunkMode = document.querySelector('input[name="chunkMode"]:checked').value;
+            let chunkSize = chunkMode === 'auto' 
+                ? appState.suggestedChunkSize 
+                : parseInt(document.getElementById('manualChunkSize').value);
+            
+            let totalChunks = file ? Math.ceil(file.size / chunkSize) : 0;
+            
+            // Update network status
+            statusText.textContent = appState.networkQuality !== 'unknown' 
+                ? `${appState.networkQuality} (${Math.round(appState.networkLatency)}ms)` 
+                : 'Unknown';
+            
+            suggestedChunkSize.textContent = file 
+                ? `${formatBytes(chunkSize)} (${totalChunks} chunk${totalChunks === 1 ? '' : 's'})` 
+                : 'Calculating...';
+            
+            // Update file info
+            if (file) {
+                fileInfo.innerHTML = `
+                    <h4>File: ${file.name}</h4>
+                    <p><strong>Size:</strong> ${formatBytes(file.size)}</p>
+                    <p><strong>Type:</strong> ${file.type || 'Unknown'}</p>
+                    <p><strong>Network:</strong> ${appState.networkQuality} (${Math.round(appState.networkLatency)}ms)</p>
+                    <p><strong>Chunks:</strong> ${totalChunks} x ${formatBytes(chunkSize)} each</p>
+                `;
+                fileInfo.style.display = 'block';
+                startBtn.disabled = false;
+            } else {
+                fileInfo.style.display = 'none';
+                startBtn.disabled = true;
             }
         }
 
@@ -5838,12 +5874,14 @@
             }
         }
         
-        async function downloadFile(filePath, fileName) {
+        async function downloadFile(messageId, fileName) {
             try {
-                const response = await authenticatedFetch(`http://localhost:8000/upload/download/${encodeURIComponent(fileName)}`);
+                // Use the correct chat download endpoint with message ID
+                const response = await authenticatedFetch(`${API_CONFIG.baseUrl}/chat/files/${messageId}/download`);
                 
                 if (!response.ok) {
-                    throw new Error('File not found');
+                    const errorText = await response.text();
+                    throw new Error(`File not found: ${errorText}`);
                 }
                 
                 const blob = await response.blob();
@@ -5982,11 +6020,15 @@
                         manualSection.style.display = 'none';
                     }
                     
-                    // Update file info if a file is already selected
-                    if (appState.selectedFile) {
-                        updateChatFileInfo(appState.selectedFile);
-                    }
+                    // Update all UI fields dynamically
+                    updateUploadDialogUI();
                 });
+            });
+            
+            // Add manual chunk size change listener
+            document.getElementById('manualChunkSize').addEventListener('change', function() {
+                // Update all UI fields dynamically when manual chunk size changes
+                updateUploadDialogUI();
             });
             
             logSystem('Application initialization complete');
