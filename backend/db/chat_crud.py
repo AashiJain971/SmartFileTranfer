@@ -194,11 +194,14 @@ class ChatCRUD:
             return cached
         
         try:
-            # Get rooms where user is a member
-            result = supabase.table("chat_room_members")\
-                .select("room_id, role, joined_at, chat_rooms(*, users!created_by(username))")\
-                .eq("user_id", user_id)\
-                .execute()
+            # Get rooms where user is a member with timeout
+            async def fetch_rooms():
+                return supabase.table("chat_room_members")\
+                    .select("room_id, role, joined_at, chat_rooms(*, users!created_by(username))")\
+                    .eq("user_id", user_id)\
+                    .execute()
+            
+            result = await asyncio.wait_for(fetch_rooms(), timeout=5.0)
             
             rooms_with_info = []
             
@@ -239,6 +242,10 @@ class ChatCRUD:
             await cache.set(cache_key, rooms_with_info, ttl=60)
             
             return rooms_with_info
+        except asyncio.TimeoutError:
+            print(f"⚠️ Database timeout getting rooms for user {user_id} - returning cached/empty data")
+            # Return empty array but don't crash
+            return []
         except Exception as e:
             print(f"❌ Error getting user chat rooms: {e}")
             return []

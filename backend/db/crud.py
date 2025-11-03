@@ -127,6 +127,18 @@ def get_uploaded_chunk_numbers(file_id: str) -> List[int]:
         # Return empty list if database fails
         return []
 
+async def get_received_chunks(file_id: str) -> List[int]:
+    """Async version: Get list of successfully uploaded chunk numbers for resume support"""
+    try:
+        result = supabase.table("uploaded_chunks").select("chunk_number").eq("file_id", file_id).order("chunk_number").execute()
+        chunks = [row["chunk_number"] for row in result.data] if result.data else []
+        if chunks:
+            print(f"🔄 RESUME: Found {len(chunks)} previously uploaded chunks for {file_id}")
+        return chunks
+    except Exception as e:
+        print(f"Database error in get_received_chunks: {e}")
+        return []
+
 async def cleanup_failed_sessions(hours_old: int = 24) -> int:
     """Clean up old failed or stale upload sessions"""
     cutoff_time = datetime.utcnow().replace(hour=0, minute=0, second=0, microsecond=0)

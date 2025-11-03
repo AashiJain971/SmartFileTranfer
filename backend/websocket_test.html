@@ -1303,11 +1303,212 @@
             margin-top: 8px;
             font-weight: 600;
             text-align: center;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            gap: 8px;
         }
+        
+        /* Spinner Loader */
+        .upload-spinner {
+            display: inline-block;
+            width: 16px;
+            height: 16px;
+            border: 3px solid rgba(21, 101, 192, 0.3);
+            border-top-color: #1565c0;
+            border-radius: 50%;
+            animation: spin 0.8s linear infinite;
+        }
+        
+        @keyframes spin {
+            to { transform: rotate(360deg); }
+        }
+        
+        /* Chunk Counter */
+        .chunk-counter {
+            display: inline-flex;
+            align-items: center;
+            gap: 8px;
+            padding: 8px 16px;
+            background: rgba(255, 255, 255, 0.9);
+            border-radius: 20px;
+            font-size: 13px;
+            font-weight: 700;
+            color: #0d47a1;
+            box-shadow: 0 2px 6px rgba(0,0,0,0.1);
+            margin-top: 8px;
+        }
+        
+        .chunk-counter .sent {
+            color: #4caf50;
+        }
+        
+        .chunk-counter .total {
+            color: #666;
+        }
+        
         .chunk-info {
             font-size: 14px;
             color: #666;
             margin: 10px 0;
+        }
+        
+        /* ✅ Resume Badge Styles */
+        .resume-badge {
+            display: inline-flex;
+            align-items: center;
+            gap: 6px;
+            padding: 6px 12px;
+            background: linear-gradient(135deg, #ff9800 0%, #f57c00 100%);
+            color: white;
+            border-radius: 20px;
+            font-size: 12px;
+            font-weight: 700;
+            box-shadow: 0 2px 8px rgba(255, 152, 0, 0.4);
+            animation: resumePulse 1.5s ease-in-out infinite;
+            margin-left: 10px;
+        }
+        
+        @keyframes resumePulse {
+            0%, 100% { box-shadow: 0 2px 8px rgba(255, 152, 0, 0.4); }
+            50% { box-shadow: 0 4px 16px rgba(255, 152, 0, 0.7); }
+        }
+        
+        .resume-badge::before {
+            content: '🔄';
+            font-size: 14px;
+        }
+        
+        /* Success Badge */
+        .success-badge {
+            display: inline-flex;
+            align-items: center;
+            gap: 6px;
+            padding: 6px 12px;
+            background: linear-gradient(135deg, #4caf50 0%, #2e7d32 100%);
+            color: white;
+            border-radius: 20px;
+            font-size: 12px;
+            font-weight: 700;
+            box-shadow: 0 2px 8px rgba(76, 175, 80, 0.4);
+        }
+        
+        .success-badge::before {
+            content: '✓';
+            font-size: 14px;
+        }
+        
+        /* Retry Indicator */
+        .retry-indicator {
+            position: fixed;
+            top: 80px;
+            right: 20px;
+            display: inline-flex;
+            align-items: center;
+            gap: 8px;
+            padding: 12px 20px;
+            background: linear-gradient(135deg, #ff9800 0%, #f57c00 100%);
+            color: white;
+            border-radius: 25px;
+            font-size: 13px;
+            font-weight: 600;
+            box-shadow: 0 4px 15px rgba(255, 152, 0, 0.5);
+            animation: slideInDown 0.3s ease-out, shake 0.5s ease-in-out infinite;
+            z-index: 10000;
+        }
+        
+        .retry-indicator.error {
+            background: linear-gradient(135deg, #f44336 0%, #c62828 100%);
+            box-shadow: 0 4px 15px rgba(244, 67, 54, 0.5);
+            animation: slideInDown 0.3s ease-out, shake 0.8s ease-in-out infinite;
+        }
+        
+        .retry-indicator::before {
+            content: '⚠️';
+            font-size: 16px;
+            animation: rotate 1s linear infinite;
+        }
+        
+        .retry-indicator.error::before {
+            content: '❌';
+            animation: shake 0.5s ease-in-out infinite;
+        }
+        
+        /* Retry Summary */
+        .retry-summary {
+            position: fixed;
+            top: 80px;
+            right: 20px;
+            display: inline-flex;
+            flex-direction: column;
+            gap: 8px;
+            padding: 16px 24px;
+            background: linear-gradient(135deg, #4caf50 0%, #2e7d32 100%);
+            color: white;
+            border-radius: 15px;
+            font-size: 13px;
+            font-weight: 600;
+            box-shadow: 0 6px 20px rgba(76, 175, 80, 0.5);
+            animation: slideInDown 0.4s ease-out;
+            z-index: 10000;
+        }
+        
+        .retry-summary .summary-title {
+            font-size: 15px;
+            font-weight: 700;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+        
+        .retry-summary .summary-stats {
+            font-size: 12px;
+            opacity: 0.9;
+            margin-top: 4px;
+        }
+        
+        /* Animations */
+        @keyframes slideInDown {
+            from {
+                transform: translateY(-100px);
+                opacity: 0;
+            }
+            to {
+                transform: translateY(0);
+                opacity: 1;
+            }
+        }
+        
+        @keyframes slideInUp {
+            from {
+                transform: translateY(100px);
+                opacity: 0;
+            }
+            to {
+                transform: translateY(0);
+                opacity: 1;
+            }
+        }
+        
+        @keyframes rotate {
+            from {
+                transform: rotate(0deg);
+            }
+            to {
+                transform: rotate(360deg);
+            }
+        }
+        
+        @keyframes shake {
+            0%, 100% {
+                transform: translateX(0);
+            }
+            25% {
+                transform: translateX(-5px);
+            }
+            75% {
+                transform: translateX(5px);
+            }
         }
     </style>
 </head>
@@ -1676,6 +1877,13 @@
                 chatInterface.style.visibility = 'hidden'; // Extra hiding
             }
             
+            // Check for pending upload
+            const pendingUpload = restoreUploadState();
+            if (pendingUpload) {
+                console.log('🔄 Pending upload found:', pendingUpload);
+                logSystem(`⚡ Resuming incomplete upload: ${pendingUpload.fileName}`, 'info');
+            }
+            
             // Clear any auth messages
             clearAuthMessage();
             
@@ -1842,7 +2050,77 @@
                 roomSearch.addEventListener('input', handleRoomSearch);
             }
             
+            // Setup online/offline event listeners for auto-reconnect
+            window.addEventListener('online', handleOnlineEvent);
+            window.addEventListener('offline', handleOfflineEvent);
+            
             logSystem('Authentication system initialized');
+        }
+        
+        // Handle internet connection restored
+        async function handleOnlineEvent() {
+            console.log('🌐 Internet connection restored!');
+            logSystem('✅ Internet connection restored - reconnecting...', 'success');
+            
+            // Reconnect WebSocket if we're logged in and have a room
+            if (appState.isLoggedIn && appState.currentRoom) {
+                if (!appState.roomWs || appState.roomWs.readyState !== WebSocket.OPEN) {
+                    console.log('🔄 Reconnecting to room WebSocket...');
+                    try {
+                        await connectToRoomWebSocketWithRetry(appState.currentRoom);
+                        console.log('✅ Reconnected! Reloading messages...');
+                        await loadRoomMessages(appState.currentRoom);
+                    } catch (err) {
+                        console.error('Failed to reconnect:', err);
+                    }
+                }
+            }
+            
+            // Resume file upload if there was one in progress
+            if (appState.uploadState.isUploading && appState.uploadState.isPaused && appState.uploadState.fileId) {
+                console.log('🔄 Auto-resuming paused upload...');
+                logSystem('🔄 Auto-resuming upload...', 'info');
+                
+                // Update UI to show resuming
+                const progressStatus = document.getElementById('chatUploadStatus');
+                const progressContainer = document.getElementById('activeUploadProgress');
+                
+                if (progressStatus) {
+                    progressStatus.innerHTML = `
+                        <span class="upload-spinner"></span>
+                        <span>🔄 Reconnecting and resuming...</span>
+                    `;
+                }
+                
+                if (progressContainer) {
+                    progressContainer.style.background = 'linear-gradient(135deg, #e3f2fd 0%, #bbdefb 100%)';
+                    progressContainer.style.borderColor = '#2196f3';
+                }
+                
+                // Unpause and trigger resume
+                appState.uploadState.isPaused = false;
+                
+                // Wait a bit for connection to stabilize, then resume
+                setTimeout(async () => {
+                    try {
+                        await resumeUpload();
+                    } catch (error) {
+                        console.error('Failed to resume upload:', error);
+                        logSystem('Failed to resume upload. Please try uploading again.', 'error');
+                    }
+                }, 1000);
+            }
+        }
+        
+        // Handle internet connection lost
+        function handleOfflineEvent() {
+            console.log('📡 Internet connection lost!');
+            logSystem('⚠️ Internet connection lost - will auto-reconnect when back online', 'warning');
+            
+            // Mark upload as paused if uploading
+            if (appState.uploadState.isUploading) {
+                appState.uploadState.isPaused = true;
+            }
         }
         
         function toggleAuthMode(e) {
@@ -3711,9 +3989,13 @@
                             
                             // Auto-reconnect after 2 seconds if still in the same room
                             setTimeout(() => {
-                                if (appState.currentRoom === roomId && !appState.roomWs) {
+                                if (appState.currentRoom === roomId && (!appState.roomWs || appState.roomWs.readyState !== WebSocket.OPEN)) {
                                     console.log(`🔄 Auto-reconnecting to room ${roomId}...`);
-                                    connectToRoomWebSocketWithRetry(roomId).catch(err => {
+                                    connectToRoomWebSocketWithRetry(roomId).then(() => {
+                                        // Reload messages after reconnection
+                                        console.log('✅ Reconnected! Reloading messages...');
+                                        loadRoomMessages(roomId);
+                                    }).catch(err => {
                                         console.error(`Failed to auto-reconnect:`, err);
                                         logSystem(`Auto-reconnection failed. Please refresh the page.`, 'error');
                                     });
@@ -4300,6 +4582,12 @@
                 console.log('Current user:', appState.user);
                 console.log('Access token exists:', !!appState.accessToken);
                 
+                // Check for pending upload for this room
+                const pendingUpload = restoreUploadState();
+                if (pendingUpload && pendingUpload.roomId === roomId) {
+                    console.log('🔄 Found pending upload for this room, will restore progress UI');
+                }
+                
                 logSystem(`Loading messages for room: ${roomId}`, 'info');
                 
                 const url = `${API_CONFIG.baseUrl}/chat/rooms/${roomId}/messages`;
@@ -4385,7 +4673,7 @@
                     // Race condition protection - only update if we're still in the same room
                     if (appState.currentRoom === roomId) {
                         appState.messages.set(roomId, messages);
-                        displayMessages(messages);
+                        await displayMessages(messages);
                         logSystem(`Loaded ${messages.length} messages for room`, 'success');
                     } else {
                         console.log(`⚠️ Room changed during message loading. Skipping display. Current: ${appState.currentRoom}, Loaded for: ${roomId}`);
@@ -4429,13 +4717,13 @@
             }
         }
         
-        function displayMessages(messages) {
+        async function displayMessages(messages) {
             console.log('displayMessages called with:', messages);
             const messagesContainer = document.getElementById('messagesContainer');
             
             // Check if we have actual messages before clearing
             const hasMessages = Array.isArray(messages) && messages.length > 0;
-            
+  1          
             if (!hasMessages) {
                 console.log('No messages to display, showing empty state');
                 
@@ -4468,6 +4756,13 @@
                 const messageElement = createMessageElement(message);
                 messagesContainer.appendChild(messageElement);
             });
+            
+            // Check if there's a pending upload for this room and restore the progress UI
+            const pendingUpload = restoreUploadState();
+            if (pendingUpload && pendingUpload.roomId === appState.currentRoom) {
+                console.log('🔄 Restoring upload progress UI for:', pendingUpload.fileName);
+                await restoreUploadProgressUI(pendingUpload);
+            }
             
             logSystem(`Displayed ${messages.length} messages in chat`, 'success');
             scrollToBottom();
@@ -5278,6 +5573,526 @@
             }
         }
         
+        // ✅ NEW: Visual feedback functions for retry/resume
+        function showRetryIndicator(chunkIndex, attempt, maxAttempts) {
+            // Remove existing indicator if any
+            hideRetryIndicator();
+            
+            const indicator = document.createElement('div');
+            indicator.id = 'retryIndicator';
+            indicator.className = attempt >= maxAttempts ? 'retry-indicator error' : 'retry-indicator';
+            
+            const isError = attempt >= maxAttempts;
+            indicator.innerHTML = `
+                <span>${isError ? 'Failed' : 'Retrying'} chunk ${chunkIndex + 1}</span>
+                <span style="opacity: 0.8; font-size: 11px;">(attempt ${attempt}/${maxAttempts})</span>
+            `;
+            
+            document.body.appendChild(indicator);
+            logSystem(`${isError ? '❌' : '⚠️'} ${isError ? 'Failed' : 'Retrying'} chunk ${chunkIndex + 1} (attempt ${attempt}/${maxAttempts})`, isError ? 'error' : 'warning');
+        }
+        
+        function hideRetryIndicator() {
+            const existing = document.getElementById('retryIndicator');
+            if (existing) {
+                existing.style.animation = 'slideInUp 0.3s ease-out reverse';
+                setTimeout(() => existing.remove(), 300);
+            }
+        }
+        
+        function showRetrySuccessSummary(totalRetries, retriedChunks) {
+            const summary = document.createElement('div');
+            summary.className = 'retry-summary';
+            summary.innerHTML = `
+                <div class="summary-title">
+                    ✅ Upload Completed!
+                </div>
+                <div class="summary-stats">
+                    ${totalRetries} chunk${totalRetries !== 1 ? 's' : ''} recovered after ${retriedChunks} ${retriedChunks !== 1 ? 'retries' : 'retry'}
+                </div>
+            `;
+            
+            document.body.appendChild(summary);
+            logSystem(`✅ Upload completed with ${totalRetries} chunks recovered after ${retriedChunks} retries`, 'success');
+            
+            // Auto-hide after 4 seconds
+            setTimeout(() => {
+                summary.style.animation = 'slideInUp 0.4s ease-out reverse';
+                setTimeout(() => summary.remove(), 400);
+            }, 4000);
+        }
+        
+        // ✅ NEW: Restore upload progress UI from saved state
+        async function restoreUploadProgressUI(uploadData) {
+            console.log('📊 Restoring upload progress UI:', uploadData);
+            
+            // Note: We can show the UI but can't resume without the file object
+            // (File objects can't be stored in localStorage)
+            
+            // Restore upload state
+            appState.uploadState.isUploading = true;
+            appState.uploadState.isPaused = true;
+            appState.uploadState.fileId = uploadData.fileId;
+            appState.uploadState.totalChunks = uploadData.totalChunks;
+            appState.uploadState.currentChunk = uploadData.currentChunk;
+            appState.uploadState.totalBytes = uploadData.fileSize;
+            appState.uploadState.originalHash = uploadData.fileHash;
+            
+            // Get already uploaded chunks to show accurate progress
+            let uploadedChunks = [];
+            try {
+                uploadedChunks = await getUploadStatus(uploadData.fileId);
+            } catch (error) {
+                console.warn('Could not get upload status:', error);
+                uploadedChunks = [];
+            }
+            
+            const successfulChunks = uploadedChunks.length;
+            const progress = (successfulChunks / uploadData.totalChunks) * 100;
+            
+            // Create progress container
+            const progressContainer = document.createElement('div');
+            progressContainer.className = 'upload-progress-container';
+            progressContainer.id = 'activeUploadProgress';
+            progressContainer.style.background = 'linear-gradient(135deg, #fff3cd 0%, #ffeaa7 100%)';
+            progressContainer.style.borderColor = '#ffc107';
+            
+            progressContainer.innerHTML = `
+                <div class="upload-status">
+                    ${uploadData.fileName}
+                    <span id="resumeBadge" class="resume-badge" style="display: inline-flex;">PAUSED AT ${successfulChunks}/${uploadData.totalChunks}</span>
+                </div>
+                <div class="progress-bar">
+                    <div id="chatUploadProgress" class="progress-fill" style="width: ${progress}%;">${progress.toFixed(0)}%</div>
+                </div>
+                <div id="chatUploadStatus" class="progress-status">
+                    <span>📁 Select the same file to continue upload (${successfulChunks}/${uploadData.totalChunks} chunks done)</span>
+                </div>
+                <div class="chunk-counter">
+                    <span>Chunks: </span>
+                    <span class="sent" id="chunksSent">${successfulChunks}</span>
+                    <span>/</span>
+                    <span class="total" id="chunksTotal">${uploadData.totalChunks}</span>
+                </div>
+                <div style="margin-top: 10px; display: flex; gap: 10px;">
+                    <button id="resumeUploadBtn" class="btn-small btn-primary" onclick="triggerResumeUpload()" style="flex: 1;">
+                        📤 Resume Upload
+                    </button>
+                    <button id="cancelUploadBtn" class="btn-small" onclick="cancelPendingUpload()" style="flex: 1; background: #dc3545; color: white;">
+                        ❌ Cancel
+                    </button>
+                </div>
+            `;
+            
+            const messagesContainer = document.getElementById('messagesContainer');
+            if (messagesContainer) {
+                messagesContainer.appendChild(progressContainer);
+                scrollToBottom();
+            }
+            
+            logSystem(`⏸️ Upload paused: ${uploadData.fileName} (${successfulChunks}/${uploadData.totalChunks} chunks completed)`, 'warning');
+        }
+        
+        // ✅ NEW: Resume upload from saved state
+        async function resumeUpload() {
+            if (!appState.uploadState.fileId) {
+                console.error('Cannot resume: missing file ID');
+                return;
+            }
+            
+            // Check if we have the file reference (only available if page wasn't reloaded)
+            if (!appState.selectedFile) {
+                console.warn('⚠️ Cannot auto-resume - file reference lost (page was reloaded)');
+                logSystem('⚠️ Click "Resume Upload" button to continue', 'warning');
+                return; // Exit - UI already shows resume button
+            }
+            
+            const fileId = appState.uploadState.fileId;
+            const file = appState.selectedFile;
+            const totalChunks = appState.uploadState.totalChunks;
+            const chunkSize = appState.uploadState.chunkSize;
+            
+            console.log(`📤 Resuming upload: ${file.name} (${totalChunks} chunks)`);
+            logSystem(`📤 Resuming upload: ${file.name}`, 'info');
+            
+            try {
+                // Get already uploaded chunks
+                const uploadedChunks = await getUploadStatus(fileId);
+                console.log(`✅ Resume: ${uploadedChunks.length} chunks already uploaded`);
+                
+                // Create or update progress container
+                let progressContainer = document.getElementById('activeUploadProgress');
+                if (!progressContainer) {
+                    // Create new progress container if it doesn't exist
+                    progressContainer = document.createElement('div');
+                    progressContainer.className = 'upload-progress-container';
+                    progressContainer.id = 'activeUploadProgress';
+                    progressContainer.innerHTML = `
+                        <div class="upload-status">
+                            ${file.name}
+                            <span id="resumeBadge" class="resume-badge">RESUMED FROM ${uploadedChunks.length}/${totalChunks}</span>
+                        </div>
+                        <div class="progress-bar">
+                            <div id="chatUploadProgress" class="progress-fill" style="width: ${(uploadedChunks.length / totalChunks * 100).toFixed(0)}%;">${(uploadedChunks.length / totalChunks * 100).toFixed(0)}%</div>
+                        </div>
+                        <div id="chatUploadStatus" class="progress-status">
+                            <span class="upload-spinner"></span>
+                            <span>Resuming upload...</span>
+                        </div>
+                        <div class="chunk-counter">
+                            <span>Chunks: </span>
+                            <span class="sent" id="chunksSent">${uploadedChunks.length}</span>
+                            <span>/</span>
+                            <span class="total" id="chunksTotal">${totalChunks}</span>
+                        </div>
+                    `;
+                    
+                    const messagesContainer = document.getElementById('messagesContainer');
+                    if (messagesContainer) {
+                        messagesContainer.appendChild(progressContainer);
+                        scrollToBottom();
+                    }
+                }
+                
+                // Update UI to show resume
+                progressContainer.style.background = 'linear-gradient(135deg, #e3f2fd 0%, #bbdefb 100%)';
+                progressContainer.style.borderColor = '#2196f3';
+                
+                const progressStatus = document.getElementById('chatUploadStatus');
+                const resumeBadge = document.getElementById('resumeBadge');
+                const chunksSentElement = document.getElementById('chunksSent');
+                
+                if (resumeBadge) {
+                    resumeBadge.className = 'resume-badge';
+                    resumeBadge.textContent = `RESUMED FROM ${uploadedChunks.length}/${totalChunks}`;
+                    resumeBadge.style.display = 'inline-flex';
+                }
+                
+                if (chunksSentElement) {
+                    chunksSentElement.textContent = uploadedChunks.length;
+                }
+                
+                let successfulChunks = uploadedChunks.length;
+                let totalRetriedChunks = 0;
+                let totalRetryAttempts = 0;
+                
+                // Continue uploading remaining chunks
+                for (let chunkNumber = 0; chunkNumber < totalChunks; chunkNumber++) {
+                    // Skip already uploaded chunks
+                    if (uploadedChunks.includes(chunkNumber)) {
+                        console.log(`⏭️  Skipping chunk ${chunkNumber} (already uploaded)`);
+                        continue;
+                    }
+                    
+                    // Check if still paused (user might have gone offline again)
+                    if (appState.uploadState.isPaused) {
+                        console.log('⏸️ Upload paused again, stopping resume');
+                        return;
+                    }
+                    
+                    appState.uploadState.currentChunk = chunkNumber;
+                    
+                    const start = chunkNumber * chunkSize;
+                    const end = Math.min(start + chunkSize, file.size);
+                    const chunk = file.slice(start, end);
+                    const chunkHash = await calculateChunkHash(chunk);
+                    
+                    // Update progress
+                    const progress = ((successfulChunks + 1) / totalChunks) * 100;
+                    const progressFill = document.getElementById('chatUploadProgress');
+                    
+                    if (progressFill) {
+                        progressFill.style.width = `${progress}%`;
+                        progressFill.textContent = `${progress.toFixed(0)}%`;
+                    }
+                    
+                    if (progressStatus) {
+                        progressStatus.innerHTML = `
+                            <span class="upload-spinner"></span>
+                            <span>Uploading chunk ${chunkNumber + 1} of ${totalChunks} • ${formatBytes(chunk.size)}</span>
+                        `;
+                    }
+                    
+                    if (chunksSentElement) {
+                        chunksSentElement.textContent = successfulChunks;
+                    }
+                    
+                    // Upload chunk with retry
+                    let chunkSuccess = false;
+                    let retryCount = 0;
+                    const maxRetries = 3;
+                    
+                    while (!chunkSuccess && retryCount < maxRetries) {
+                        try {
+                            const chunkFormData = new FormData();
+                            chunkFormData.append('file_id', fileId);
+                            chunkFormData.append('chunk_number', chunkNumber.toString());
+                            chunkFormData.append('total_chunks', totalChunks.toString());
+                            chunkFormData.append('chunk_hash', chunkHash);
+                            chunkFormData.append('chunk', chunk);
+                            
+                            const chunkResponse = await authenticatedFetch(`http://localhost:8000/chat/rooms/${appState.currentRoom}/files/chunk`, {
+                                method: 'POST',
+                                body: chunkFormData
+                            });
+                            
+                            if (!chunkResponse.ok) {
+                                throw new Error(`HTTP ${chunkResponse.status}`);
+                            }
+                            
+                            chunkSuccess = true;
+                            successfulChunks++;
+                            
+                            if (chunksSentElement) chunksSentElement.textContent = successfulChunks;
+                            
+                            appState.uploadState.currentChunk = chunkNumber;
+                            saveUploadState();
+                            
+                            if (retryCount > 0) {
+                                totalRetriedChunks++;
+                                totalRetryAttempts += retryCount;
+                                hideRetryIndicator();
+                            }
+                            
+                            logSystem(`✅ Uploaded chunk ${chunkNumber + 1}/${totalChunks}${retryCount > 0 ? ` (after ${retryCount} retries)` : ''}`, 'success');
+                            
+                        } catch (error) {
+                            retryCount++;
+                            console.warn(`⚠️  Chunk ${chunkNumber} upload failed (attempt ${retryCount}/${maxRetries}):`, error.message);
+                            
+                            if (retryCount < maxRetries) {
+                                showRetryIndicator(chunkNumber, retryCount, maxRetries);
+                                if (progressStatus) {
+                                    progressStatus.innerHTML = `
+                                        <span class="upload-spinner"></span>
+                                        <span>⚠️ Retrying chunk ${chunkNumber + 1}... (attempt ${retryCount + 1}/${maxRetries})</span>
+                                    `;
+                                }
+                                await new Promise(resolve => setTimeout(resolve, 2000));
+                            } else {
+                                showRetryIndicator(chunkNumber, retryCount, maxRetries);
+                                if (progressStatus) {
+                                    progressStatus.innerHTML = `
+                                        <span>⏸️ Upload paused - Will auto-resume when internet reconnects</span>
+                                    `;
+                                }
+                                
+                                appState.uploadState.isPaused = true;
+                                const progressContainer = document.getElementById('activeUploadProgress');
+                                if (progressContainer) {
+                                    progressContainer.style.background = 'linear-gradient(135deg, #fff3cd 0%, #ffeaa7 100%)';
+                                    progressContainer.style.borderColor = '#ffc107';
+                                }
+                                
+                                setTimeout(() => hideRetryIndicator(), 3000);
+                                throw new Error(`Failed to upload chunk ${chunkNumber + 1} after ${maxRetries} retries`);
+                            }
+                        }
+                    }
+                }
+                
+                // All chunks uploaded, complete the upload
+                console.log('✅ All chunks uploaded, completing upload...');
+                const progressFill = document.getElementById('chatUploadProgress');
+                if (progressFill) {
+                    progressFill.style.width = '100%';
+                    progressFill.textContent = '100%';
+                }
+                
+                if (progressStatus) {
+                    progressStatus.innerHTML = `
+                        <span class="upload-spinner"></span>
+                        <span>Finalizing upload...</span>
+                    `;
+                }
+                
+                const completeFormData = new FormData();
+                completeFormData.append('file_id', fileId);
+                completeFormData.append('expected_hash', appState.uploadState.originalHash);
+                
+                const completeResponse = await authenticatedFetch(`http://localhost:8000/chat/rooms/${appState.currentRoom}/files/complete`, {
+                    method: 'POST',
+                    body: completeFormData
+                });
+                
+                if (!completeResponse.ok) {
+                    throw new Error('Failed to complete file upload');
+                }
+                
+                const result = await completeResponse.json();
+                console.log('File upload completion result:', result);
+                
+                // Update to success
+                if (progressFill) progressFill.textContent = '✓ Complete';
+                if (progressStatus) progressStatus.innerHTML = '<span>✅ Upload completed successfully!</span>';
+                
+                if (totalRetriedChunks > 0) {
+                    showRetrySuccessSummary(totalRetriedChunks, totalRetryAttempts);
+                }
+                
+                // Clean up
+                appState.uploadState.isUploading = false;
+                appState.uploadState.isPaused = false;
+                appState.uploadState.currentChunk = 0;
+                appState.uploadState.fileId = null;
+                clearUploadState();
+                
+                // Remove progress container after delay
+                const finalProgressContainer = document.getElementById('activeUploadProgress');
+                setTimeout(() => {
+                    if (finalProgressContainer) finalProgressContainer.remove();
+                }, 1500);
+                
+                logSystem(`File uploaded successfully: ${file.name}${totalRetriedChunks > 0 ? ` (${totalRetriedChunks} chunks recovered after ${totalRetryAttempts} retries)` : ''}`, 'success');
+                
+            } catch (error) {
+                console.error('Resume upload failed:', error);
+                appState.uploadState.isPaused = true;
+                const progressStatus = document.getElementById('chatUploadStatus');
+                if (progressStatus) {
+                    progressStatus.innerHTML = `
+                        <span>⏸️ Upload paused - Will auto-resume when internet reconnects</span>
+                    `;
+                }
+            } finally {
+                hideRetryIndicator();
+            }
+        }
+        
+        // ✅ NEW: Save upload state to localStorage
+        function saveUploadState() {
+            if (appState.uploadState.isUploading && appState.uploadState.fileId) {
+                const uploadData = {
+                    fileId: appState.uploadState.fileId,
+                    fileName: appState.selectedFile?.name,
+                    fileSize: appState.uploadState.totalBytes,
+                    fileHash: appState.uploadState.originalHash,
+                    totalChunks: appState.uploadState.totalChunks,
+                    currentChunk: appState.uploadState.currentChunk,
+                    roomId: appState.currentRoom,
+                    timestamp: Date.now()
+                };
+                localStorage.setItem('pendingUpload', JSON.stringify(uploadData));
+                console.log('💾 Upload state saved to localStorage');
+            }
+        }
+        
+        // ✅ NEW: Restore upload state from localStorage
+        function restoreUploadState() {
+            const savedUpload = localStorage.getItem('pendingUpload');
+            if (savedUpload) {
+                try {
+                    const uploadData = JSON.parse(savedUpload);
+                    // Only restore if less than 24 hours old
+                    if (Date.now() - uploadData.timestamp < 24 * 60 * 60 * 1000) {
+                        console.log('🔄 Found pending upload, will resume:', uploadData.fileName);
+                        logSystem(`Found incomplete upload: ${uploadData.fileName}. Will resume automatically when you enter the chat.`, 'info');
+                        return uploadData;
+                    } else {
+                        localStorage.removeItem('pendingUpload');
+                    }
+                } catch (error) {
+                    console.error('Failed to parse saved upload state:', error);
+                    localStorage.removeItem('pendingUpload');
+                }
+            }
+            return null;
+        }
+        
+        // ✅ NEW: Clear upload state from localStorage
+        function clearUploadState() {
+            localStorage.removeItem('pendingUpload');
+            console.log('🗑️ Upload state cleared from localStorage');
+        }
+        
+        // ✅ NEW: Trigger resume upload by opening file picker
+        function triggerResumeUpload() {
+            const pendingUpload = restoreUploadState();
+            if (!pendingUpload) {
+                logSystem('No pending upload found', 'error');
+                return;
+            }
+            
+            // Create hidden file input
+            const fileInput = document.createElement('input');
+            fileInput.type = 'file';
+            fileInput.style.display = 'none';
+            fileInput.accept = '*/*';
+            
+            fileInput.onchange = async (e) => {
+                const file = e.target.files[0];
+                if (!file) return;
+                
+                // Validate it's the same file
+                if (file.name !== pendingUpload.fileName) {
+                    alert(`⚠️ Please select the same file: ${pendingUpload.fileName}`);
+                    return;
+                }
+                
+                if (file.size !== pendingUpload.fileSize) {
+                    alert(`⚠️ File size doesn't match. Expected: ${formatBytes(pendingUpload.fileSize)}, Got: ${formatBytes(file.size)}`);
+                    return;
+                }
+                
+                // Calculate hash to verify it's the same file
+                logSystem('Verifying file integrity...', 'info');
+                const fileHash = await calculateFileHash(file);
+                
+                if (fileHash !== pendingUpload.fileHash) {
+                    alert('⚠️ This appears to be a different file. Hash mismatch.');
+                    return;
+                }
+                
+                // File verified! Store reference and resume
+                appState.selectedFile = file;
+                appState.uploadState.chunkSize = Math.ceil(file.size / pendingUpload.totalChunks);
+                
+                logSystem('✅ File verified! Resuming upload...', 'success');
+                
+                // Remove the paused UI
+                const pausedContainer = document.getElementById('activeUploadProgress');
+                if (pausedContainer) pausedContainer.remove();
+                
+                // Start resume
+                await resumeUpload();
+                
+                // Clean up
+                document.body.removeChild(fileInput);
+            };
+            
+            document.body.appendChild(fileInput);
+            fileInput.click();
+        }
+        
+        // ✅ NEW: Cancel pending upload
+        function cancelPendingUpload() {
+            if (confirm('Are you sure you want to cancel this upload? Progress will be lost.')) {
+                clearUploadState();
+                appState.uploadState.isUploading = false;
+                appState.uploadState.isPaused = false;
+                appState.uploadState.fileId = null;
+                
+                const progressContainer = document.getElementById('activeUploadProgress');
+                if (progressContainer) progressContainer.remove();
+                
+                logSystem('Upload cancelled', 'warning');
+            }
+        }
+        
+        // ✅ NEW: Check upload status to support resume
+        async function getUploadStatus(fileId) {
+            try {
+                const response = await authenticatedFetch(`http://localhost:8000/chat/rooms/${appState.currentRoom}/files/status/${fileId}`);
+                if (response.ok) {
+                    const data = await response.json();
+                    return data.chunks_received || [];
+                }
+            } catch (error) {
+                console.log('No previous upload found, starting fresh:', error.message);
+            }
+            return [];
+        }
+        
         async function uploadFileToChat(file, chunkSize, fileHash) {
             // Ensure we have a room for file upload
             if (!appState.currentRoom) {
@@ -5289,22 +6104,46 @@
             
             const totalChunks = Math.ceil(file.size / chunkSize);
             
+            // Update upload state
+            appState.uploadState.isUploading = true;
+            appState.uploadState.isPaused = false;
+            appState.uploadState.totalChunks = totalChunks;
+            appState.uploadState.chunkSize = chunkSize;
+            appState.uploadState.totalBytes = file.size;
+            appState.uploadState.originalHash = fileHash;
+            
             logSystem(`Uploading ${file.name} to room ${appState.currentRoom} in ${totalChunks} chunks`, 'info');
             
             // Create progress display in the messages container using the new styles
             const progressContainer = document.createElement('div');
             progressContainer.className = 'upload-progress-container';
+            progressContainer.id = 'activeUploadProgress';
             progressContainer.innerHTML = `
-                <div class="upload-status">${file.name}</div>
+                <div class="upload-status">
+                    ${file.name}
+                    <span id="resumeBadge" style="display: none;"></span>
+                </div>
                 <div class="progress-bar">
                     <div id="chatUploadProgress" class="progress-fill" style="width: 0%;">0%</div>
                 </div>
-                <div id="chatUploadStatus" class="progress-status">Preparing upload...</div>
+                <div id="chatUploadStatus" class="progress-status">
+                    <span class="upload-spinner"></span>
+                    <span>Preparing upload...</span>
+                </div>
+                <div class="chunk-counter">
+                    <span>Chunks: </span>
+                    <span class="sent" id="chunksSent">0</span>
+                    <span>/</span>
+                    <span class="total" id="chunksTotal">${totalChunks}</span>
+                </div>
             `;
             
             const messagesContainer = document.getElementById('messagesContainer');
             messagesContainer.appendChild(progressContainer);
             scrollToBottom();
+            
+            let fileId = null;
+            let uploadedChunks = [];
             
             try {
                 // Start upload session (chat endpoints expect JSON, not FormData)
@@ -5336,49 +6175,178 @@
             }
             
             const startResult = await startResponse.json();
-            const fileId = startResult.file_id; // Use the file_id returned by the server
+            fileId = startResult.file_id; // Use the file_id returned by the server
             
-                // Upload chunks
+                // Store fileId in app state for tracking
+                appState.uploadState.fileId = fileId;
+            
+                // ✅ NEW: Check for previously uploaded chunks (RESUME support!)
+                uploadedChunks = await getUploadStatus(fileId);
+                if (uploadedChunks.length > 0) {
+                    console.log(`🔄 RESUMING UPLOAD - ${uploadedChunks.length} chunks already uploaded!`);
+                    logSystem(`✨ RESUME MODE ACTIVATED - Skipping ${uploadedChunks.length} already uploaded chunks! 🔄`, 'success');
+                    
+                    // Show impressive resume badge
+                    const resumeBadge = document.getElementById('resumeBadge');
+                    if (resumeBadge) {
+                        resumeBadge.className = 'resume-badge';
+                        resumeBadge.textContent = `RESUMED FROM ${uploadedChunks.length}/${totalChunks}`;
+                        resumeBadge.style.display = 'inline-flex';
+                    }
+                    
+                    // Update initial progress to show already completed chunks
+                    const initialProgress = (uploadedChunks.length / totalChunks) * 100;
+                    const progressFill = document.getElementById('chatUploadProgress');
+                    progressFill.style.width = `${initialProgress}%`;
+                    progressFill.textContent = `${initialProgress.toFixed(0)}%`;
+                    
+                    const chunksSentElement = document.getElementById('chunksSent');
+                    if (chunksSentElement) chunksSentElement.textContent = uploadedChunks.length;
+                    
+                    document.getElementById('chatUploadStatus').innerHTML = `
+                        <span class="upload-spinner"></span>
+                        <span>⚡ Smart Resume: ${uploadedChunks.length} chunks already uploaded, continuing from chunk ${uploadedChunks.length + 1}...</span>
+                    `;
+                }
+            
+                // Upload chunks with resume support and retry tracking
+                let successfulChunks = uploadedChunks.length;
+                let totalRetriedChunks = 0; // Track how many chunks had retries
+                let totalRetryAttempts = 0; // Track total number of retry attempts
+                
                 for (let chunkNumber = 0; chunkNumber < totalChunks; chunkNumber++) {
+                    // ✅ Check if upload was paused (internet went offline)
+                    if (appState.uploadState.isPaused) {
+                        console.log('⏸️ Upload paused - waiting for internet to reconnect');
+                        logSystem('⏸️ Upload paused - will resume automatically when internet returns', 'warning');
+                        
+                        // Update UI to show paused state
+                        const progressStatus = document.getElementById('chatUploadStatus');
+                        const progressContainer = document.getElementById('activeUploadProgress');
+                        
+                        if (progressStatus) {
+                            progressStatus.innerHTML = `<span>⏸️ Upload paused - Will auto-resume when internet reconnects</span>`;
+                        }
+                        
+                        if (progressContainer) {
+                            progressContainer.style.background = 'linear-gradient(135deg, #fff3cd 0%, #ffeaa7 100%)';
+                            progressContainer.style.borderColor = '#ffc107';
+                        }
+                        
+                        // Save state and exit - will be resumed by handleOnlineEvent
+                        saveUploadState();
+                        return; // Exit the upload loop
+                    }
+                    
+                    // ✅ Skip already uploaded chunks
+                    if (uploadedChunks.includes(chunkNumber)) {
+                        console.log(`⏭️  Skipping chunk ${chunkNumber} (already uploaded)`);
+                        continue;
+                    }
+                    
+                    // Update current chunk in state
+                    appState.uploadState.currentChunk = chunkNumber;
+                    
                     const start = chunkNumber * chunkSize;
                     const end = Math.min(start + chunkSize, file.size);
                     const chunk = file.slice(start, end);
                     const chunkHash = await calculateChunkHash(chunk);
                     
                     // Update progress with better visual feedback
-                    const progress = ((chunkNumber + 1) / totalChunks) * 100;
+                    const progress = ((successfulChunks + 1) / totalChunks) * 100;
                     const progressFill = document.getElementById('chatUploadProgress');
                     const progressStatus = document.getElementById('chatUploadStatus');
+                    const chunksSent = document.getElementById('chunksSent');
                     
                     progressFill.style.width = `${progress}%`;
                     progressFill.textContent = `${progress.toFixed(0)}%`;
-                    progressStatus.textContent = `Chunk ${chunkNumber + 1} of ${totalChunks} • ${formatBytes(chunk.size)} • ${progress.toFixed(1)}% complete`;
+                    progressStatus.innerHTML = `
+                        <span class="upload-spinner"></span>
+                        <span>Uploading chunk ${chunkNumber + 1} of ${totalChunks} • ${formatBytes(chunk.size)}</span>
+                    `;
+                    if (chunksSent) chunksSent.textContent = successfulChunks;
                     
                     logSystem(`Uploading chunk ${chunkNumber + 1}/${totalChunks} (${formatBytes(chunk.size)})`, 'info');
                     
-                    const chunkFormData = new FormData();
-                    chunkFormData.append('file_id', fileId);
-                    chunkFormData.append('chunk_number', chunkNumber.toString());
-                    chunkFormData.append('total_chunks', totalChunks.toString());
-                    chunkFormData.append('chunk_hash', chunkHash);
-                    chunkFormData.append('chunk', chunk);
+                    // ✅ NEW: Retry logic for network failures with visual indicators
+                    let chunkSuccess = false;
+                    let retryCount = 0;
+                    const maxRetries = 3;
+                    let chunkHadRetries = false;
                     
-                    const chunkResponse = await authenticatedFetch(`http://localhost:8000/chat/rooms/${appState.currentRoom}/files/chunk`, {
-                        method: 'POST',
-                        body: chunkFormData
-                    });
-                    
-                    if (!chunkResponse.ok) {
-                        throw new Error(`Failed to upload chunk ${chunkNumber}`);
+                    while (!chunkSuccess && retryCount < maxRetries) {
+                        try {
+                            const chunkFormData = new FormData();
+                            chunkFormData.append('file_id', fileId);
+                            chunkFormData.append('chunk_number', chunkNumber.toString());
+                            chunkFormData.append('total_chunks', totalChunks.toString());
+                            chunkFormData.append('chunk_hash', chunkHash);
+                            chunkFormData.append('chunk', chunk);
+                            
+                            const chunkResponse = await authenticatedFetch(`http://localhost:8000/chat/rooms/${appState.currentRoom}/files/chunk`, {
+                                method: 'POST',
+                                body: chunkFormData
+                            });
+                            
+                            if (!chunkResponse.ok) {
+                                throw new Error(`HTTP ${chunkResponse.status}`);
+                            }
+                            
+                            chunkSuccess = true;
+                            successfulChunks++;
+                            
+                            // Update chunk counter
+                            const chunksSentElement = document.getElementById('chunksSent');
+                            if (chunksSentElement) chunksSentElement.textContent = successfulChunks;
+                            
+                            // Save upload state after each successful chunk
+                            appState.uploadState.currentChunk = chunkNumber;
+                            saveUploadState();
+                            
+                            // Track retry statistics
+                            if (retryCount > 0) {
+                                chunkHadRetries = true;
+                                totalRetriedChunks++;
+                                totalRetryAttempts += retryCount;
+                                hideRetryIndicator();
+                            }
+                            
+                            logSystem(`✅ Uploaded chunk ${chunkNumber + 1}/${totalChunks}${retryCount > 0 ? ` (after ${retryCount} retries)` : ''}`, 'success');
+                            
+                        } catch (error) {
+                            retryCount++;
+                            chunkHadRetries = true;
+                            console.warn(`⚠️  Chunk ${chunkNumber} upload failed (attempt ${retryCount}/${maxRetries}):`, error.message);
+                            
+                            if (retryCount < maxRetries) {
+                                // Show visual retry indicator
+                                showRetryIndicator(chunkNumber, retryCount, maxRetries);
+                                progressStatus.innerHTML = `
+                                    <span class="upload-spinner"></span>
+                                    <span>⚠️ Retrying chunk ${chunkNumber + 1}... (attempt ${retryCount + 1}/${maxRetries})</span>
+                                `;
+                                await new Promise(resolve => setTimeout(resolve, 2000)); // Wait 2s before retry
+                            } else {
+                                // Max retries reached - show error indicator
+                                showRetryIndicator(chunkNumber, retryCount, maxRetries);
+                                progressStatus.innerHTML = `
+                                    <span>❌ Network error on chunk ${chunkNumber + 1} - Upload can be resumed later</span>
+                                `;
+                                
+                                setTimeout(() => hideRetryIndicator(), 3000); // Hide error after 3s
+                                throw new Error(`Failed to upload chunk ${chunkNumber + 1} after ${maxRetries} retries. Upload progress saved - you can resume later!`);
+                            }
+                        }
                     }
-                    
-                    logSystem(`Uploaded chunk ${chunkNumber + 1}/${totalChunks} successfully`, 'success');
                 }
                 
                 // Show completion progress
                 document.getElementById('chatUploadProgress').style.width = '100%';
                 document.getElementById('chatUploadProgress').textContent = '100%';
-                document.getElementById('chatUploadStatus').textContent = 'Finalizing upload...';
+                document.getElementById('chatUploadStatus').innerHTML = `
+                    <span class="upload-spinner"></span>
+                    <span>Finalizing upload...</span>
+                `;
             
                 // Complete upload
                 const completeFormData = new FormData();
@@ -5400,14 +6368,26 @@
                 // Update progress to show success
                 document.getElementById('chatUploadProgress').style.width = '100%';
                 document.getElementById('chatUploadProgress').textContent = '✓ Complete';
-                document.getElementById('chatUploadStatus').textContent = 'Upload completed successfully!';
+                document.getElementById('chatUploadStatus').innerHTML = '<span>✅ Upload completed successfully!</span>';
+                
+                // Show retry summary if there were any retries
+                if (totalRetriedChunks > 0) {
+                    showRetrySuccessSummary(totalRetriedChunks, totalRetryAttempts);
+                }
                 
                 // Keep progress visible for a moment, then remove
                 setTimeout(() => {
                     progressContainer.remove();
                 }, 1500);
                 
-                logSystem(`File uploaded successfully: ${file.name}`, 'success');
+                logSystem(`File uploaded successfully: ${file.name}${totalRetriedChunks > 0 ? ` (${totalRetriedChunks} chunks recovered after ${totalRetryAttempts} retries)` : ''}`, 'success');
+                
+                // Reset upload state
+                appState.uploadState.isUploading = false;
+                appState.uploadState.isPaused = false;
+                appState.uploadState.currentChunk = 0;
+                appState.uploadState.fileId = null;
+                clearUploadState(); // Clear from localStorage
                 
                 // Do NOT optimistically append the file message here.
                 // The server broadcasts `new_file_message` over WebSocket before this HTTP response completes.
@@ -5429,12 +6409,28 @@
                 return result;
                 
             } catch (error) {
-                // Remove progress container on error
-                if (progressContainer.parentNode) {
-                    progressContainer.remove();
+                // Mark upload as failed but keep state for resume
+                appState.uploadState.isPaused = true;
+                
+                // DON'T remove progress container - keep it visible as "Paused"
+                const progressStatus = document.getElementById('chatUploadStatus');
+                if (progressStatus) {
+                    progressStatus.innerHTML = `
+                        <span>⏸️ Upload paused - Will auto-resume when internet reconnects</span>
+                    `;
                 }
-                logSystem(`File upload failed: ${getDetailedErrorMessage(error)}`, 'error');
-                throw error;
+                
+                // Change container style to indicate paused state
+                if (progressContainer) {
+                    progressContainer.style.background = 'linear-gradient(135deg, #fff3cd 0%, #ffeaa7 100%)';
+                    progressContainer.style.borderColor = '#ffc107';
+                }
+                
+                logSystem(`File upload paused: ${getDetailedErrorMessage(error)}. Will auto-resume on reconnect.`, 'warning');
+                // Don't throw - keep the function from failing completely
+            } finally {
+                // Always hide retry indicator on function exit
+                hideRetryIndicator();
             }
         }
 

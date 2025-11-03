@@ -710,6 +710,59 @@ async def start_chat_file_upload(
         raise HTTPException(status_code=500, detail=str(e))
 
 
+@router.get("/rooms/{room_id}/files/status/{file_id}")
+async def get_upload_status(
+    room_id: str,
+    file_id: str,
+    current_user: dict = Depends(get_current_active_user)
+):
+    """Get upload status to support resume functionality - IMPRESSIVE FEATURE! 🚀"""
+    try:
+        # Check room membership
+        is_member = await ChatCRUD.is_user_in_room(current_user["id"], room_id)
+        if not is_member:
+            raise HTTPException(status_code=403, detail="Not a member of this room")
+        
+        # Get file session from existing upload system
+        from db.crud import get_file_session
+        
+        file_session = await get_file_session(file_id)
+        
+        if not file_session:
+            # No session found - fresh upload
+            return {
+                "file_id": file_id,
+                "chunks_received": [],
+                "total_chunks": 0,
+                "status": "not_started"
+            }
+        
+        # Get received chunks from database
+        from db.crud import get_received_chunks
+        received_chunks = await get_received_chunks(file_id)
+        
+        return {
+            "file_id": file_id,
+            "chunks_received": received_chunks,
+            "total_chunks": file_session.get("total_chunks", 0),
+            "status": file_session.get("status", "in_progress"),
+            "file_size": file_session.get("file_size", 0),
+            "filename": file_session.get("filename", "unknown")
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error getting upload status: {e}")
+        # Return empty status on error (allows fresh upload)
+        return {
+            "file_id": file_id,
+            "chunks_received": [],
+            "total_chunks": 0,
+            "status": "unknown"
+        }
+
+
 @router.post("/rooms/{room_id}/files/chunk")
 async def upload_chat_file_chunk(
     room_id: str,
