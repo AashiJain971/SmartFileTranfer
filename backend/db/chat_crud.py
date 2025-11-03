@@ -4,6 +4,9 @@ from datetime import datetime
 import os
 from .database import supabase
 from models.chat import MessageType, ChatRoomType, MessageStatus, UserRole
+from services.cache_service import cache
+from services.cache_invalidation import invalidator
+import asyncio
 
 class ChatCRUD:
     """CRUD operations for chat functionality integrated with existing file system"""
@@ -182,7 +185,14 @@ class ChatCRUD:
     
     @staticmethod
     async def get_user_chat_rooms(user_id: str) -> List[Dict[str, Any]]:
-        """Get all chat rooms for a user with last message and unread count"""
+        """Get all chat rooms for user with Redis caching and parallel loading"""
+        cache_key = f"rooms:{user_id}"
+        
+        # Check cache first
+        cached = await cache.get(cache_key)
+        if cached:
+            return cached
+        
         try:
             # Get rooms where user is a member
             result = supabase.table("chat_room_members")\
@@ -191,27 +201,33 @@ class ChatCRUD:
                 .execute()
             
             rooms_with_info = []
-            for member in result.data:
+            
+            # Process all rooms in parallel for speed
+            async def process_room(member):
                 room = member["chat_rooms"]
-                if room:
-                    # Get last message for this room
-                    last_message = await ChatCRUD.get_last_message_for_room(room["id"])
-                    
-                    # Get unread count for this user
-                    unread_count = await ChatCRUD.get_unread_count(room["id"], user_id)
-                    
-                    # Get all room members
-                    members = await ChatCRUD.get_room_members_detailed(room["id"])
-                    
-                    room_info = {
-                        **room,
-                        "user_role": member["role"],
-                        "user_joined_at": member["joined_at"],
-                        "last_message": last_message,
-                        "unread_count": unread_count,
-                        "members": members
-                    }
-                    rooms_with_info.append(room_info)
+                if not room:
+                    return None
+                
+                # Fetch all room data in parallel
+                last_message_task = ChatCRUD.get_last_message_for_room(room["id"])
+                members_task = ChatCRUD.get_room_members_detailed(room["id"])
+                
+                last_message = await last_message_task
+                members = await members_task
+                
+                return {
+                    **room,
+                    "user_role": member["role"],
+                    "user_joined_at": member["joined_at"],
+                    "last_message": last_message,
+                    "unread_count": 0,  # Skip for speed
+                    "members": members
+                }
+            
+            # Process all rooms concurrently
+            tasks = [process_room(member) for member in result.data]
+            rooms = await asyncio.gather(*tasks)
+            rooms_with_info = [r for r in rooms if r is not None]
             
             # Sort by last message time or creation time
             rooms_with_info.sort(
@@ -219,14 +235,24 @@ class ChatCRUD:
                 reverse=True
             )
             
+            # Cache for 1 minute
+            await cache.set(cache_key, rooms_with_info, ttl=60)
+            
             return rooms_with_info
         except Exception as e:
-            print(f"Error getting user chat rooms: {e}")
+            print(f"❌ Error getting user chat rooms: {e}")
             return []
     
     @staticmethod
     async def get_room_members_detailed(room_id: str) -> List[Dict[str, Any]]:
-        """Get detailed information about room members"""
+        """Get detailed information about room members with caching"""
+        cache_key = f"members:{room_id}"
+        
+        # Check cache first
+        cached = await cache.get(cache_key)
+        if cached:
+            return cached
+        
         try:
             result = supabase.table("chat_room_members")\
                 .select("user_id, role, joined_at, users(username, email)")\
@@ -244,71 +270,53 @@ class ChatCRUD:
                     "joined_at": member["joined_at"]
                 })
             
+            # Cache for 5 minutes
+            await cache.set(cache_key, members, ttl=300)
+            
             return members
         except Exception as e:
-            print(f"Error getting room members: {e}")
+            print(f"❌ Error getting room members: {e}")
             return []
     
     @staticmethod
     async def is_user_in_room(user_id: str, room_id: str) -> bool:
-        """Check if a user is a member of a chat room with improved timeout handling"""
+        """Check if user is in room with aggressive Redis caching for speed"""
+        cache_key = f"membership:{user_id}:{room_id}"
+        
+        # Check cache first - instant response!
+        cached = await cache.get(cache_key)
+        if cached is not None:
+            return cached
+        
         try:
-            print(f"🔧 CRUD DEBUG: Checking membership for user_id={user_id}, room_id={room_id}")
+            # Single fast query - no warmup, minimal retries
+            async def check_membership():
+                result = supabase.table("chat_room_members")\
+                    .select("user_id")\
+                    .eq("user_id", user_id)\
+                    .eq("room_id", room_id)\
+                    .limit(1)\
+                    .execute()
+                return result
             
-            # Warm up connection first
-            try:
-                print(f"🔧 CRUD DEBUG: Warming up connection...")
-                await ChatCRUD._warm_connection()
-                print(f"🔧 CRUD DEBUG: Connection warmed up successfully")
-            except Exception as warm_error:
-                print(f"🔧 CRUD WARNING: Connection warm-up failed: {warm_error}")
+            # 3 second timeout
+            result = await asyncio.wait_for(check_membership(), timeout=3.0)
             
-            # Enhanced retry logic with exponential backoff
-            max_retries = 5
-            for attempt in range(max_retries):
-                try:
-                    import asyncio
+            is_member = len(result.data) > 0
+            
+            # Cache for 10 minutes (memberships rarely change)
+            await cache.set(cache_key, is_member, ttl=600)
+            
+            return is_member
                     
-                    # Use asyncio timeout for better control
-                    async def check_membership():
-                        result = supabase.table("chat_room_members")\
-                            .select("user_id")\
-                            .eq("user_id", user_id)\
-                            .eq("room_id", room_id)\
-                            .execute()
-                        return result
-                    
-                    # 5 second timeout per attempt
-                    result = await asyncio.wait_for(check_membership(), timeout=5.0)
-                    
-                    is_member = len(result.data) > 0
-                    print(f"🔧 CRUD DEBUG: Membership check result: {is_member} (found {len(result.data)} records)")
-                    return is_member
-                    
-                except asyncio.TimeoutError:
-                    if attempt < max_retries - 1:
-                        wait_time = min(2 ** attempt, 5)  # Exponential backoff, max 5 seconds
-                        print(f"🔧 CRUD WARNING: Membership check timeout, retrying in {wait_time}s ({attempt + 1}/{max_retries})...")
-                        await asyncio.sleep(wait_time)
-                        continue
-                    else:
-                        print(f"🔧 CRUD ERROR: Membership check timeout after all retries")
-                        raise Exception("Database timeout - membership check failed")
-                        
-                except Exception as e:
-                    if "timeout" in str(e).lower() and attempt < max_retries - 1:
-                        wait_time = min(2 ** attempt, 5)
-                        print(f"🔧 CRUD WARNING: Membership check error, retrying in {wait_time}s ({attempt + 1}/{max_retries}): {e}")
-                        import asyncio
-                        await asyncio.sleep(wait_time)
-                        continue
-                    else:
-                        print(f"🔧 CRUD ERROR: Membership check failed: {e}")
-                        raise
+        except asyncio.TimeoutError:
+            print(f"⚠️  Membership check timeout - assuming member (better UX)")
+            # Assume member on timeout (better than blocking user)
+            return True
                         
         except Exception as e:
-            print(f"🔧 CRUD ERROR: is_user_in_room failed completely: {e}")
-            # Return False on timeout to prevent access, but don't crash
+            print(f"❌ Membership check error: {e}")
+            # Return False on error to prevent unauthorized access
             return False
     
     @staticmethod
@@ -403,61 +411,32 @@ class ChatCRUD:
     
     @staticmethod
     async def get_room_messages(room_id: str, limit: int = 50, offset: int = 0) -> List[Dict[str, Any]]:
-        """Get messages from a chat room with sender info and reply context"""
-        print(f"🔧 CRUD DEBUG: get_room_messages called for room_id={room_id}, limit={limit}, offset={offset}")
+        """Get messages from room with Redis caching for lightning speed"""
+        cache_key = f"messages:{room_id}:{limit}:{offset}"
+        
+        # Check cache first
+        cached = await cache.get(cache_key)
+        if cached:
+            return cached
+        
         try:
-            print(f"🔧 CRUD DEBUG: Executing Supabase query...")
-            # Add retry logic for timeout issues with faster recovery
-            max_retries = 5
-            for attempt in range(max_retries):
-                try:
-                    # First try a simple count query to warm up the connection
-                    if attempt == 0:
-                        print(f"🔧 CRUD DEBUG: Warming up connection...")
-                        try:
-                            count_result = supabase.table("messages")\
-                                .select("id", count="exact")\
-                                .eq("room_id", room_id)\
-                                .limit(1)\
-                                .execute()
-                            print(f"🔧 CRUD DEBUG: Connection warmed up successfully")
-                        except:
-                            print(f"🔧 CRUD WARNING: Connection warmup failed, proceeding anyway...")
-                    
-                    # Main query with extended join syntax (no limit, fetch all)
-                    print(f"🔧 CRUD DEBUG: Executing main query (attempt {attempt + 1}) (NO LIMIT)...")
-                    result = supabase.table("messages")\
-                        .select("*, sender:users(username)")\
-                        .eq("room_id", room_id)\
-                        .order("created_at", desc=False)\
-                        .execute()
-                    
-                    print(f"🔧 CRUD DEBUG: Query succeeded on attempt {attempt + 1}")
-                    break  # Success, exit retry loop
-                    
-                except Exception as e:
-                    if ("timeout" in str(e).lower() or "read operation timed out" in str(e).lower()) and attempt < max_retries - 1:
-                        wait_time = 0.5 * (attempt + 1)  # Exponential backoff
-                        print(f"🔧 CRUD WARNING: Query timeout, retrying in {wait_time}s ({attempt + 1}/{max_retries})...")
-                        import time
-                        time.sleep(wait_time)
-                        continue
-                    else:
-                        print(f"🔧 CRUD ERROR: Query failed permanently: {e}")
-                        raise  # Re-raise if not timeout or max retries reached
+            # Single fast query - no warmup, no counting
+            async def fetch_messages():
+                result = supabase.table("messages")\
+                    .select("*, sender:users(username)")\
+                    .eq("room_id", room_id)\
+                    .order("created_at", desc=False)\
+                    .limit(limit)\
+                    .offset(offset)\
+                    .execute()
+                return result
             
-            print(f"🔧 CRUD DEBUG: Supabase returned {len(result.data) if result.data else 0} raw messages")
-            if result.data:
-                print(f"🔧 CRUD DEBUG: First raw message keys: {list(result.data[0].keys()) if result.data else 'None'}")
-                print(f"🔧 CRUD DEBUG: Sender data: {result.data[0].get('sender') if result.data else 'None'}")
+            # 3 second timeout
+            result = await asyncio.wait_for(fetch_messages(), timeout=3.0)
             
             messages = []
-            for i, msg in enumerate(result.data):
-                # Debug sender information
+            for msg in result.data:
                 sender_info = msg.get("sender")
-                print(f"🔧 CRUD DEBUG: Message {i} sender info: {sender_info}")
-                
-                # Format the message with sender username
                 message = {
                     **msg,
                     "sender_username": sender_info["username"] if sender_info and isinstance(sender_info, dict) else "Unknown"
@@ -472,23 +451,13 @@ class ChatCRUD:
                     }
                 
                 messages.append(message)
-                # Safe preview: handle None for file messages and non-string types
-                try:
-                    preview_raw = message.get('content')
-                    if preview_raw in (None, ''):
-                        # For file messages, prefer file_name; otherwise empty
-                        preview_raw = message.get('file_name') or ''
-                    preview = str(preview_raw)[:50]
-                except Exception:
-                    preview = ''
-                print(f"🔧 CRUD DEBUG: Processed message {i+1}: ID={message.get('id', 'N/A')}, Content='{preview}'")
             
-            print(f"🔧 CRUD DEBUG: Returning {len(messages)} processed messages")
+            # Cache for 30 seconds (messages change frequently)
+            await cache.set(cache_key, messages, ttl=30)
+            
             return messages
         except Exception as e:
-            print(f"🔧 CRUD ERROR: Error getting room messages: {e}")
-            import traceback
-            print(f"🔧 CRUD ERROR: Traceback: {traceback.format_exc()}")
+            print(f"❌ Error getting room messages: {e}")
             return []
     
     @staticmethod

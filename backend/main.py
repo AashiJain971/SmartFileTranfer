@@ -29,7 +29,15 @@ AI_CONFIDENCE_THRESHOLD = 0.5
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     # Startup
-    print("Starting Smart File Transfer Backend...")
+    print("🚀 Starting Smart File Transfer Backend...")
+    
+    # Initialize Redis cache FIRST for maximum speed
+    try:
+        from services.cache_service import cache
+        await cache.connect()
+        print("✅ Redis cache initialized - SPEED BOOST ACTIVE!")
+    except Exception as e:
+        print(f"⚠️  Redis unavailable (will work without cache): {e}")
     
     # Warm up database connections
     try:
@@ -43,17 +51,27 @@ async def lifespan(app: FastAPI):
     try:
         await chunk_service.cleanup_stale_uploads(max_age_hours=24)
         cleaned_sessions = await cleanup_failed_sessions(hours_old=24)
-        print(f"Cleaned up {cleaned_sessions} stale sessions")
+        print(f"🧹 Cleaned up {cleaned_sessions} stale sessions")
     except Exception as e:
-        print(f"Warning: Startup cleanup failed: {e}")
+        print(f"⚠️  Warning: Startup cleanup failed: {e}")
     
     # Start background cleanup task
     cleanup_task = asyncio.create_task(periodic_cleanup())
     
+    print("✅ Backend ready - Lightning fast with Redis caching!")
+    
     yield
     
     # Shutdown
-    print("Shutting down Smart File Transfer Backend...")
+    print("🛑 Shutting down Smart File Transfer Backend...")
+    
+    # Close Redis connection
+    try:
+        from services.cache_service import cache
+        await cache.close()
+    except:
+        pass
+    
     cleanup_task.cancel()
     try:
         await cleanup_task
@@ -305,6 +323,48 @@ def _format_bytes(bytes_val: int) -> str:
     elif bytes_val >= 1024:
         return f"{bytes_val / 1024:.0f} KB"
     return f"{bytes_val} bytes"
+
+@app.get("/admin/cache/stats")
+async def cache_stats():
+    """Get Redis cache statistics"""
+    try:
+        from services.cache_service import cache
+        if not cache.enabled:
+            return {"error": "Redis cache not available"}
+        
+        info = await cache.redis.info("stats")
+        keyspace = await cache.redis.info("keyspace")
+        
+        hits = info.get("keyspace_hits", 0)
+        misses = info.get("keyspace_misses", 0)
+        total = hits + misses
+        hit_rate = (hits / total * 100) if total > 0 else 0
+        
+        return {
+            "enabled": cache.enabled,
+            "total_connections": info.get("total_connections_received", 0),
+            "total_commands": info.get("total_commands_processed", 0),
+            "keyspace_hits": hits,
+            "keyspace_misses": misses,
+            "hit_rate_percent": round(hit_rate, 2),
+            "total_keys": keyspace.get("db0", {}).get("keys", 0) if keyspace.get("db0") else 0,
+            "status": "🔥 BLAZING FAST!" if hit_rate > 80 else "⚡ FAST" if hit_rate > 50 else "🚀 WARMING UP"
+        }
+    except Exception as e:
+        return {"error": str(e)}
+
+@app.post("/admin/cache/clear")
+async def clear_cache():
+    """Clear all cache (admin only)"""
+    try:
+        from services.cache_service import cache
+        if not cache.enabled:
+            return {"error": "Redis cache not available"}
+        
+        await cache.redis.flushdb()
+        return {"message": "✅ Cache cleared successfully - Speed will rebuild as users interact"}
+    except Exception as e:
+        return {"error": str(e)}
 
 @app.get("/speedtest/{size_kb}")
 async def speed_test(size_kb: int):

@@ -3,6 +3,7 @@ from datetime import datetime, timedelta
 from supabase import create_client
 from config import settings
 from services.auth_service import auth_service
+from services.cache_service import cache
 import asyncio
 import time
 
@@ -54,7 +55,14 @@ async def retry_database_operation(operation_func, max_retries=None, delay=None)
             raise e
 
 async def get_user_by_id(user_id: str) -> Optional[Dict[str, Any]]:
-    """Get user by ID with retry logic"""
+    """Get user by ID with Redis caching"""
+    cache_key = f"user:{user_id}"
+    
+    # Try cache first
+    cached = await cache.get(cache_key)
+    if cached:
+        return cached
+    
     async def _operation():
         result = supabase.table("users").select("*").eq("id", user_id).execute()
         if result.data:
@@ -62,7 +70,11 @@ async def get_user_by_id(user_id: str) -> Optional[Dict[str, Any]]:
         return None
     
     try:
-        return await retry_database_operation(_operation)
+        user = await retry_database_operation(_operation)
+        if user:
+            # Cache for 10 minutes
+            await cache.set(cache_key, user, ttl=600)
+        return user
     except Exception as e:
         print(f"❌ Error getting user by ID after retries: {e}")
         return None
@@ -86,7 +98,14 @@ async def create_user(user_data: Dict[str, Any]) -> Optional[Dict[str, Any]]:
         return None
 
 async def get_user_by_email(email: str) -> Optional[Dict[str, Any]]:
-    """Get user by email with retry logic"""
+    """Get user by email with Redis caching"""
+    cache_key = f"user:email:{email}"
+    
+    # Try cache first
+    cached = await cache.get(cache_key)
+    if cached:
+        return cached
+    
     async def _operation():
         result = supabase.table("users").select("*").eq("email", email).execute()
         if result.data:
@@ -94,13 +113,27 @@ async def get_user_by_email(email: str) -> Optional[Dict[str, Any]]:
         return None
     
     try:
-        return await retry_database_operation(_operation)
+        user = await retry_database_operation(_operation)
+        if user:
+            # Cache for 10 minutes
+            await cache.set(cache_key, user, ttl=600)
+            # Also cache by user_id
+            await cache.set(f"user:{user['id']}", user, ttl=600)
+        return user
     except Exception as e:
         print(f"❌ Error getting user by email after retries: {e}")
         return None
 
 async def get_user_by_email_with_login_retry(email: str) -> Optional[Dict[str, Any]]:
-    """Get user by email with enhanced retry logic specifically for login"""
+    """Get user by email with Redis caching and enhanced retry for login"""
+    cache_key = f"user:email:{email}"
+    
+    # Try cache first for instant login
+    cached = await cache.get(cache_key)
+    if cached:
+        print(f"🔥 FAST LOGIN - User loaded from cache: {email[:10]}...")
+        return cached
+    
     async def _operation():
         print(f"🔍 Querying user by email: {email[:10]}...")
         result = supabase.table("users").select("*").eq("email", email).execute()
@@ -113,7 +146,12 @@ async def get_user_by_email_with_login_retry(email: str) -> Optional[Dict[str, A
     try:
         # Enhanced retry for login with more attempts and better backoff
         print(f"🚀 Starting login database query for: {email[:10]}...")
-        return await retry_database_operation(_operation, max_retries=6, delay=0.3)
+        user = await retry_database_operation(_operation, max_retries=6, delay=0.3)
+        if user:
+            # Cache for 10 minutes for fast subsequent logins
+            await cache.set(cache_key, user, ttl=600)
+            await cache.set(f"user:{user['id']}", user, ttl=600)
+        return user
     except Exception as e:
         print(f"❌ Error getting user by email for login after enhanced retries: {e}")
         return None
