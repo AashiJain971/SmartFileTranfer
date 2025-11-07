@@ -2077,9 +2077,12 @@
             }
             
             // Resume file upload if there was one in progress
-            if (appState.uploadState.isUploading && appState.uploadState.isPaused && appState.uploadState.fileId) {
-                console.log('🔄 Auto-resuming paused upload...');
-                logSystem('🔄 Auto-resuming upload...', 'info');
+            if (appState.uploadState.isUploading && appState.uploadState.isPaused) {
+                console.log('🔄 Resuming paused upload...');
+                logSystem('✅ Internet reconnected - resuming upload...', 'success');
+                
+                // Simply unpause - the upload loop will continue automatically
+                appState.uploadState.isPaused = false;
                 
                 // Update UI to show resuming
                 const progressStatus = document.getElementById('chatUploadStatus');
@@ -2088,7 +2091,7 @@
                 if (progressStatus) {
                     progressStatus.innerHTML = `
                         <span class="upload-spinner"></span>
-                        <span>🔄 Reconnecting and resuming...</span>
+                        <span>✅ Resuming upload...</span>
                     `;
                 }
                 
@@ -2096,19 +2099,6 @@
                     progressContainer.style.background = 'linear-gradient(135deg, #e3f2fd 0%, #bbdefb 100%)';
                     progressContainer.style.borderColor = '#2196f3';
                 }
-                
-                // Unpause and trigger resume
-                appState.uploadState.isPaused = false;
-                
-                // Wait a bit for connection to stabilize, then resume
-                setTimeout(async () => {
-                    try {
-                        await resumeUpload();
-                    } catch (error) {
-                        console.error('Failed to resume upload:', error);
-                        logSystem('Failed to resume upload. Please try uploading again.', 'error');
-                    }
-                }, 1000);
             }
         }
         
@@ -5695,6 +5685,9 @@
         
         // ✅ NEW: Resume upload from saved state
         async function resumeUpload() {
+            console.log(`🔧 DEBUG resumeUpload: Entry`);
+            console.log(`🔧 DEBUG resumeUpload: fileId=${appState.uploadState.fileId}, selectedFile=${!!appState.selectedFile}`);
+            
             if (!appState.uploadState.fileId) {
                 console.error('Cannot resume: missing file ID');
                 return;
@@ -5703,8 +5696,31 @@
             // Check if we have the file reference (only available if page wasn't reloaded)
             if (!appState.selectedFile) {
                 console.warn('⚠️ Cannot auto-resume - file reference lost (page was reloaded)');
-                logSystem('⚠️ Click "Resume Upload" button to continue', 'warning');
-                return; // Exit - UI already shows resume button
+                logSystem('⚠️ Cannot auto-resume - please refresh and reupload', 'warning');
+                
+                // Update UI to show error state
+                const progressStatus = document.getElementById('chatUploadStatus');
+                const progressContainer = document.getElementById('activeUploadProgress');
+                
+                if (progressStatus) {
+                    progressStatus.innerHTML = `
+                        <span>⚠️ Cannot resume - file reference lost. Please refresh page and reupload.</span>
+                    `;
+                }
+                
+                if (progressContainer) {
+                    progressContainer.style.background = 'linear-gradient(135deg, #fff3cd 0%, #ffeaa7 100%)';
+                    progressContainer.style.borderColor = '#ffc107';
+                }
+                
+                // Reset upload state after a delay
+                setTimeout(() => {
+                    appState.uploadState.isUploading = false;
+                    appState.uploadState.isPaused = false;
+                    if (progressContainer) progressContainer.remove();
+                }, 5000);
+                
+                return;
             }
             
             const fileId = appState.uploadState.fileId;
@@ -5712,13 +5728,14 @@
             const totalChunks = appState.uploadState.totalChunks;
             const chunkSize = appState.uploadState.chunkSize;
             
-            console.log(`📤 Resuming upload: ${file.name} (${totalChunks} chunks)`);
+            console.log(`📤 Resuming upload: ${file.name} (${totalChunks} chunks, chunkSize=${chunkSize})`);
             logSystem(`📤 Resuming upload: ${file.name}`, 'info');
             
             try {
                 // Get already uploaded chunks
+                console.log(`🔧 DEBUG: Fetching upload status for ${fileId}`);
                 const uploadedChunks = await getUploadStatus(fileId);
-                console.log(`✅ Resume: ${uploadedChunks.length} chunks already uploaded`);
+                console.log(`✅ Resume: ${uploadedChunks.length} chunks already uploaded:`, uploadedChunks.slice(0, 10));
                 
                 // Create or update progress container
                 let progressContainer = document.getElementById('activeUploadProgress');
@@ -5776,6 +5793,10 @@
                 let totalRetriedChunks = 0;
                 let totalRetryAttempts = 0;
                 
+                console.log(`🔧 DEBUG: Starting upload loop from chunk 0 to ${totalChunks-1}`);
+                console.log(`🔧 DEBUG: Will skip ${uploadedChunks.length} already uploaded chunks`);
+                console.log(`🔧 DEBUG: isPaused=${appState.uploadState.isPaused} before loop`);
+                
                 // Continue uploading remaining chunks
                 for (let chunkNumber = 0; chunkNumber < totalChunks; chunkNumber++) {
                     // Skip already uploaded chunks
@@ -5784,9 +5805,13 @@
                         continue;
                     }
                     
+                    console.log(`🔧 DEBUG: Processing chunk ${chunkNumber}, isPaused=${appState.uploadState.isPaused}`);
+                    
                     // Check if still paused (user might have gone offline again)
                     if (appState.uploadState.isPaused) {
-                        console.log('⏸️ Upload paused again, stopping resume');
+                        console.log(`⏸️ Upload paused again at chunk ${chunkNumber}, stopping resume`);
+                        console.log(`🔧 DEBUG: uploadState when paused:`, appState.uploadState);
+                        logSystem(`⏸️ Upload paused at chunk ${chunkNumber}`, 'warning');
                         return;
                     }
                     
@@ -5816,6 +5841,8 @@
                     if (chunksSentElement) {
                         chunksSentElement.textContent = successfulChunks;
                     }
+                    
+                    console.log(`📤 Uploading chunk ${chunkNumber + 1}/${totalChunks}`);
                     
                     // Upload chunk with retry
                     let chunkSuccess = false;
@@ -6102,17 +6129,14 @@
                 }
             }
             
-            const totalChunks = Math.ceil(file.size / chunkSize);
+            // NOTE: chunkSize passed here is just a hint - backend will override with dynamic calculation
             
-            // Update upload state
-            appState.uploadState.isUploading = true;
-            appState.uploadState.isPaused = false;
-            appState.uploadState.totalChunks = totalChunks;
-            appState.uploadState.chunkSize = chunkSize;
-            appState.uploadState.totalBytes = file.size;
-            appState.uploadState.originalHash = fileHash;
+            logSystem(`Preparing to upload ${file.name}...`, 'info');
             
-            logSystem(`Uploading ${file.name} to room ${appState.currentRoom} in ${totalChunks} chunks`, 'info');
+            let fileId = null;
+            let uploadedChunks = [];
+            let actualChunkSize = chunkSize; // Will be updated from backend response
+            let totalChunks = Math.ceil(file.size / chunkSize); // Initial estimate
             
             // Create progress display in the messages container using the new styles
             const progressContainer = document.createElement('div');
@@ -6142,16 +6166,13 @@
             messagesContainer.appendChild(progressContainer);
             scrollToBottom();
             
-            let fileId = null;
-            let uploadedChunks = [];
-            
             try {
                 // Start upload session (chat endpoints expect JSON, not FormData)
                 document.getElementById('chatUploadStatus').textContent = 'Starting upload session...';
                 
                 const startRequest = {
                     filename: file.name,
-                    total_chunks: totalChunks,
+                    total_chunks: totalChunks,  // Estimated
                     file_size: file.size,
                     file_hash: fileHash
                 };
@@ -6164,20 +6185,38 @@
                     body: JSON.stringify(startRequest)
                 });
 
-            if (!startResponse.ok) {
-                const errorText = await startResponse.text();
-                console.error('Start upload error:', {
-                    status: startResponse.status,
-                    statusText: startResponse.statusText,
-                    body: errorText
-                });
-                throw new Error(`Failed to start file upload: ${startResponse.status} ${startResponse.statusText}`);
-            }
-            
-            const startResult = await startResponse.json();
-            fileId = startResult.file_id; // Use the file_id returned by the server
-            
-                // Store fileId in app state for tracking
+                if (!startResponse.ok) {
+                    const errorText = await startResponse.text();
+                    console.error('Start upload error:', {
+                        status: startResponse.status,
+                        statusText: startResponse.statusText,
+                        body: errorText
+                    });
+                    throw new Error(`Failed to start file upload: ${startResponse.status} ${startResponse.statusText}`);
+                }
+                
+                const startResult = await startResponse.json();
+                fileId = startResult.file_id; // Use the file_id returned by the server
+                
+                // ✅ USE BACKEND'S DYNAMIC CHUNK SIZE (not client's guess)
+                if (startResult.chunk_size) {
+                    actualChunkSize = startResult.chunk_size;
+                    totalChunks = Math.ceil(file.size / actualChunkSize);
+                    
+                    // Update UI with correct total chunks
+                    const chunksTotal = document.getElementById('chunksTotal');
+                    if (chunksTotal) chunksTotal.textContent = totalChunks;
+                    
+                    console.log(`✅ Backend assigned chunk size: ${actualChunkSize} bytes (${totalChunks} chunks)`);
+                }
+                
+                // Update upload state with correct values
+                appState.uploadState.isUploading = true;
+                appState.uploadState.isPaused = false;
+                appState.uploadState.totalChunks = totalChunks;
+                appState.uploadState.chunkSize = actualChunkSize;
+                appState.uploadState.totalBytes = file.size;
+                appState.uploadState.originalHash = fileHash;
                 appState.uploadState.fileId = fileId;
             
                 // ✅ NEW: Check for previously uploaded chunks (RESUME support!)
@@ -6215,27 +6254,40 @@
                 let totalRetryAttempts = 0; // Track total number of retry attempts
                 
                 for (let chunkNumber = 0; chunkNumber < totalChunks; chunkNumber++) {
-                    // ✅ Check if upload was paused (internet went offline)
-                    if (appState.uploadState.isPaused) {
+                    // ✅ Wait while paused (internet went offline)
+                    while (appState.uploadState.isPaused) {
                         console.log('⏸️ Upload paused - waiting for internet to reconnect');
-                        logSystem('⏸️ Upload paused - will resume automatically when internet returns', 'warning');
                         
-                        // Update UI to show paused state
-                        const progressStatus = document.getElementById('chatUploadStatus');
-                        const progressContainer = document.getElementById('activeUploadProgress');
+                        // Update UI to show paused state (only once)
+                        let progressStatus = document.getElementById('chatUploadStatus');
+                        let progressContainer = document.getElementById('activeUploadProgress');
                         
-                        if (progressStatus) {
+                        if (progressStatus && !progressStatus.innerHTML.includes('paused')) {
                             progressStatus.innerHTML = `<span>⏸️ Upload paused - Will auto-resume when internet reconnects</span>`;
+                            logSystem('⏸️ Upload paused - will resume automatically when internet returns', 'warning');
                         }
                         
-                        if (progressContainer) {
+                        if (progressContainer && progressContainer.style.borderColor !== 'rgb(255, 193, 7)') {
                             progressContainer.style.background = 'linear-gradient(135deg, #fff3cd 0%, #ffeaa7 100%)';
                             progressContainer.style.borderColor = '#ffc107';
                         }
                         
-                        // Save state and exit - will be resumed by handleOnlineEvent
+                        // Save state
                         saveUploadState();
-                        return; // Exit the upload loop
+                        
+                        // Wait 1 second before checking again
+                        await new Promise(resolve => setTimeout(resolve, 1000));
+                    }
+                    
+                    // Upload resumed - update UI (if we were paused)
+                    if (chunkNumber === appState.uploadState.currentChunk && chunkNumber > 0) {
+                        let progressContainer = document.getElementById('activeUploadProgress');
+                        if (progressContainer) {
+                            progressContainer.style.background = 'linear-gradient(135deg, #e3f2fd 0%, #bbdefb 100%)';
+                            progressContainer.style.borderColor = '#2196f3';
+                            console.log(`✅ Upload resumed at chunk ${chunkNumber}`);
+                            logSystem(`✅ Upload resumed`, 'success');
+                        }
                     }
                     
                     // ✅ Skip already uploaded chunks
@@ -6247,8 +6299,8 @@
                     // Update current chunk in state
                     appState.uploadState.currentChunk = chunkNumber;
                     
-                    const start = chunkNumber * chunkSize;
-                    const end = Math.min(start + chunkSize, file.size);
+                    const start = chunkNumber * actualChunkSize;
+                    const end = Math.min(start + actualChunkSize, file.size);
                     const chunk = file.slice(start, end);
                     const chunkHash = await calculateChunkHash(chunk);
                     
@@ -6365,10 +6417,23 @@
                 const result = await completeResponse.json();
                 console.log('File upload completion result:', result);
                 
+                // Check if message was created
+                const messageCreated = result.message_created === true;
+                const messageError = result.message_error;
+                
                 // Update progress to show success
                 document.getElementById('chatUploadProgress').style.width = '100%';
                 document.getElementById('chatUploadProgress').textContent = '✓ Complete';
-                document.getElementById('chatUploadStatus').innerHTML = '<span>✅ Upload completed successfully!</span>';
+                
+                if (messageCreated) {
+                    document.getElementById('chatUploadStatus').innerHTML = '<span>✅ Upload completed successfully!</span>';
+                } else {
+                    // File uploaded but message not created (database timeout)
+                    document.getElementById('chatUploadStatus').innerHTML = `
+                        <span>✅ File uploaded! ⚠️ Message delayed (${messageError || 'database busy'})</span>
+                    `;
+                    console.warn('Message creation failed:', messageError);
+                }
                 
                 // Show retry summary if there were any retries
                 if (totalRetriedChunks > 0) {
@@ -6378,9 +6443,13 @@
                 // Keep progress visible for a moment, then remove
                 setTimeout(() => {
                     progressContainer.remove();
-                }, 1500);
+                }, messageCreated ? 1500 : 3000); // Show longer if message failed
                 
                 logSystem(`File uploaded successfully: ${file.name}${totalRetriedChunks > 0 ? ` (${totalRetriedChunks} chunks recovered after ${totalRetryAttempts} retries)` : ''}`, 'success');
+                
+                if (!messageCreated) {
+                    logSystem(`⚠️ Chat message not created yet (database timeout). File is saved - refresh page to see it.`, 'warning');
+                }
                 
                 // Reset upload state
                 appState.uploadState.isUploading = false;
@@ -6389,44 +6458,157 @@
                 appState.uploadState.fileId = null;
                 clearUploadState(); // Clear from localStorage
                 
-                // Do NOT optimistically append the file message here.
-                // The server broadcasts `new_file_message` over WebSocket before this HTTP response completes.
-                // Rely on the WebSocket handler to render the message to avoid duplicates on sender side.
-                if (result.message_id && result.file_info) {
-                    logSystem(`File message created on server: ${result.file_info.original_filename}`, 'success');
-                    if (!(appState.roomWs && appState.roomWs.readyState === WebSocket.OPEN)) {
-                        // WebSocket not ready — fallback to refresh after a short delay
-                        setTimeout(async () => {
-                            console.log('WebSocket not open after file upload; refreshing messages...');
-                            await loadRoomMessages(appState.currentRoom);
-                        }, 400);
-                    }
-                } else {
-                    console.warn('Missing message_id or file_info in result:', result);
-                    logSystem('File uploaded but message data incomplete', 'warning');
+                // Handle message display
+                if (messageCreated && result.message_id) {
+                    logSystem(`File message created: ${result.file_name}`, 'success');
+                    
+                    // Refresh messages to show the file (since WebSocket might not have worked)
+                    setTimeout(async () => {
+                        console.log('Refreshing messages to show uploaded file...');
+                        await loadRoomMessages(appState.currentRoom);
+                    }, 500);
+                } else if (!messageCreated) {
+                    // File saved but message not created - auto-retry message creation
+                    console.warn('Message not created due to database timeout. Starting auto-retry...');
+                    
+                    document.getElementById('chatUploadStatus').innerHTML = `
+                        <span>⚠️ Retrying message creation...</span>
+                    `;
+                    
+                    // Auto-retry message creation up to 3 times with increasing delays
+                    let retryCount = 0;
+                    const maxRetries = 3;
+                    const retryDelays = [2000, 5000, 10000]; // 2s, 5s, 10s
+                    
+                    const retryMessageCreation = async () => {
+                        while (retryCount < maxRetries) {
+                            try {
+                                console.log(`🔄 Retry attempt ${retryCount + 1}/${maxRetries} for message creation...`);
+                                logSystem(`🔄 Retry ${retryCount + 1}/${maxRetries}: Creating chat message...`, 'info');
+                                
+                                const formData = new FormData();
+                                formData.append('room_id', appState.currentRoom);
+                                if (replyToId) {
+                                    formData.append('reply_to_id', replyToId);
+                                }
+                                
+                                const retryResponse = await fetch(
+                                    `${API_BASE_URL}/chat/files/${result.file_id}/retry-message`,
+                                    {
+                                        method: 'POST',
+                                        headers: {
+                                            'Authorization': `Bearer ${appState.accessToken}`
+                                        },
+                                        body: formData
+                                    }
+                                );
+                                
+                                if (retryResponse.ok) {
+                                    const retryResult = await retryResponse.json();
+                                    console.log('✅ Message created successfully on retry:', retryResult);
+                                    
+                                    document.getElementById('chatUploadStatus').innerHTML = `
+                                        <span>✅ Upload completed successfully!</span>
+                                    `;
+                                    
+                                    logSystem(`✅ File message created successfully after ${retryCount + 1} retries!`, 'success');
+                                    
+                                    // Refresh messages to show the file
+                                    setTimeout(async () => {
+                                        console.log('Refreshing messages to show uploaded file...');
+                                        await loadRoomMessages(appState.currentRoom);
+                                    }, 500);
+                                    
+                                    // Success - exit retry loop
+                                    return;
+                                } else {
+                                    throw new Error(`Retry failed: ${retryResponse.status}`);
+                                }
+                                
+                            } catch (retryError) {
+                                console.error(`❌ Retry attempt ${retryCount + 1} failed:`, retryError);
+                                retryCount++;
+                                
+                                if (retryCount < maxRetries) {
+                                    // Wait before next retry
+                                    const delay = retryDelays[retryCount - 1];
+                                    console.log(`⏳ Waiting ${delay/1000}s before next retry...`);
+                                    await new Promise(resolve => setTimeout(resolve, delay));
+                                } else {
+                                    // All retries exhausted
+                                    console.error('❌ All retry attempts exhausted');
+                                    logSystem('⚠️ Could not create chat message after 3 retries. File is saved - refresh page to try again.', 'warning');
+                                    
+                                    document.getElementById('chatUploadStatus').innerHTML = `
+                                        <span>⚠️ File saved, but message creation failed. Refresh to try again.</span>
+                                    `;
+                                    
+                                    setTimeout(() => {
+                                        logSystem('💡 Tip: Refresh the page and the message should appear', 'info');
+                                    }, 2000);
+                                }
+                            }
+                        }
+                    };
+                    
+                    // Start retry process in background
+                    retryMessageCreation();
                 }
                 
                 return result;
                 
             } catch (error) {
-                // Mark upload as failed but keep state for resume
-                appState.uploadState.isPaused = true;
+                console.error('Upload error:', error);
                 
-                // DON'T remove progress container - keep it visible as "Paused"
-                const progressStatus = document.getElementById('chatUploadStatus');
-                if (progressStatus) {
-                    progressStatus.innerHTML = `
-                        <span>⏸️ Upload paused - Will auto-resume when internet reconnects</span>
-                    `;
+                // Check if this is a network error (connection lost) or server error
+                const isNetworkError = error.message.includes('Failed to fetch') || 
+                                      error.message.includes('NetworkError') ||
+                                      error.message.includes('network');
+                
+                if (isNetworkError) {
+                    // Network issue - mark as paused for auto-resume
+                    appState.uploadState.isPaused = true;
+                    
+                    const progressStatus = document.getElementById('chatUploadStatus');
+                    if (progressStatus) {
+                        progressStatus.innerHTML = `
+                            <span>⏸️ Upload paused - Will auto-resume when internet reconnects</span>
+                        `;
+                    }
+                    
+                    if (progressContainer) {
+                        progressContainer.style.background = 'linear-gradient(135deg, #fff3cd 0%, #ffeaa7 100%)';
+                        progressContainer.style.borderColor = '#ffc107';
+                    }
+                    
+                    logSystem(`File upload paused: ${getDetailedErrorMessage(error)}. Will auto-resume on reconnect.`, 'warning');
+                    
+                } else {
+                    // Server error or other non-network issue - show error and allow retry
+                    appState.uploadState.isUploading = false;
+                    appState.uploadState.isPaused = false;
+                    
+                    const progressStatus = document.getElementById('chatUploadStatus');
+                    if (progressStatus) {
+                        progressStatus.innerHTML = `
+                            <span>❌ Upload failed: ${error.message}</span>
+                        `;
+                    }
+                    
+                    if (progressContainer) {
+                        progressContainer.style.background = 'linear-gradient(135deg, #f8d7da 0%, #f5c6cb 100%)';
+                        progressContainer.style.borderColor = '#dc3545';
+                    }
+                    
+                    logSystem(`File upload failed: ${getDetailedErrorMessage(error)}`, 'error');
+                    
+                    // Remove progress after a delay
+                    setTimeout(() => {
+                        if (progressContainer) progressContainer.remove();
+                    }, 5000);
                 }
                 
-                // Change container style to indicate paused state
-                if (progressContainer) {
-                    progressContainer.style.background = 'linear-gradient(135deg, #fff3cd 0%, #ffeaa7 100%)';
-                    progressContainer.style.borderColor = '#ffc107';
-                }
-                
-                logSystem(`File upload paused: ${getDetailedErrorMessage(error)}. Will auto-resume on reconnect.`, 'warning');
+                throw error;
                 // Don't throw - keep the function from failing completely
             } finally {
                 // Always hide retry indicator on function exit

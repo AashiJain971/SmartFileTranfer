@@ -382,7 +382,7 @@ class ChatCRUD:
             raise Exception(f"Failed to send text message: {str(e)}")
     
     @staticmethod
-    async def send_file_message(sender_id: str, room_id: str, file_session_id: Optional[int],
+    async def send_file_message(sender_id: str, room_id: str, file_session_id: int,
                               file_path: str, file_name: str, file_size: int, 
                               file_hash: str, reply_to_id: Optional[str] = None) -> Dict[str, Any]:
         """Send a file message linked to existing file upload system"""
@@ -396,16 +396,13 @@ class ChatCRUD:
                 "room_id": room_id,
                 "sender_id": sender_id,
                 "message_type": message_type,
+                "file_session_id": file_session_id,  # ✅ LINKS TO EXISTING UPLOAD SYSTEM
                 "file_path": file_path,
                 "file_name": file_name,
                 "file_size": file_size,
                 "file_hash": file_hash,  # ✅ USES EXISTING HASH VERIFICATION
                 "reply_to_id": reply_to_id
             }
-            
-            # Only add file_session_id if provided (for chunked uploads with sessions)
-            if file_session_id is not None:
-                message_data["file_session_id"] = file_session_id
             
             result = supabase.table("messages").insert(message_data).execute()
             if result.data and len(result.data) > 0:
