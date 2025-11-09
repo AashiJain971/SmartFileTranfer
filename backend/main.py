@@ -5,6 +5,19 @@ import asyncio
 from contextlib import asynccontextmanager
 import time
 import logging
+import os
+from pathlib import Path
+
+# Load environment variables FIRST before any imports that need them
+from dotenv import load_dotenv
+env_path = Path(__file__).parent / '.env'
+print(f"🔍 Loading .env from: {env_path}")
+print(f"🔍 .env exists: {env_path.exists()}")
+load_dotenv(dotenv_path=env_path, override=True)
+
+# Debug: Check if Pinata keys are loaded
+print(f"🔍 PINATA_API_KEY loaded: {os.getenv('PINATA_API_KEY')[:10] + '...' if os.getenv('PINATA_API_KEY') else 'NOT SET'}")
+print(f"🔍 PINATA_SECRET_KEY loaded: {os.getenv('PINATA_SECRET_KEY')[:10] + '...' if os.getenv('PINATA_SECRET_KEY') else 'NOT SET'}")
 
 from routers import upload
 from routers import websocket  # Add WebSocket router

@@ -384,8 +384,12 @@ class ChatCRUD:
     @staticmethod
     async def send_file_message(sender_id: str, room_id: str, file_session_id: Optional[int],
                               file_path: str, file_name: str, file_size: int, 
-                              file_hash: str, reply_to_id: Optional[str] = None) -> Dict[str, Any]:
-        """Send a file message linked to existing file upload system"""
+                              file_hash: str, reply_to_id: Optional[str] = None,
+                              blockchain_tx_hash: Optional[str] = None,
+                              blockchain_block_number: Optional[int] = None,
+                              ipfs_cid: Optional[str] = None,
+                              certificate_url: Optional[str] = None) -> Dict[str, Any]:
+        """Send a file message linked to existing file upload system with blockchain/IPFS data"""
         try:
             # Determine if it's an image or regular file
             image_extensions = {'.jpg', '.jpeg', '.png', '.gif', '.webp', '.bmp', '.svg'}
@@ -400,7 +404,12 @@ class ChatCRUD:
                 "file_name": file_name,
                 "file_size": file_size,
                 "file_hash": file_hash,  # ✅ USES EXISTING HASH VERIFICATION
-                "reply_to_id": reply_to_id
+                "reply_to_id": reply_to_id,
+                # ✅ NEW: Blockchain and IPFS fields
+                "blockchain_tx_hash": blockchain_tx_hash,
+                "blockchain_block_number": blockchain_block_number,
+                "ipfs_cid": ipfs_cid,
+                "certificate_url": certificate_url
             }
             
             # Only add file_session_id if provided (for chunked uploads with sessions)

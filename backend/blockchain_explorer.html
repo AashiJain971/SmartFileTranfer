@@ -1,0 +1,387 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>SmartFileTransfer - Blockchain Explorer</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, sans-serif;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            min-height: 100vh;
+            padding: 20px;
+        }
+
+        .container {
+            max-width: 1200px;
+            margin: 0 auto;
+        }
+
+        .header {
+            background: white;
+            border-radius: 16px;
+            padding: 30px;
+            margin-bottom: 20px;
+            box-shadow: 0 10px 30px rgba(0, 0, 0, 0.1);
+        }
+
+        .header h1 {
+            color: #667eea;
+            font-size: 32px;
+            margin-bottom: 10px;
+            display: flex;
+            align-items: center;
+            gap: 10px;
+        }
+
+        .header .subtitle {
+            color: #666;
+            font-size: 16px;
+        }
+
+        .verified-badge {
+            display: inline-flex;
+            align-items: center;
+            gap: 8px;
+            background: linear-gradient(135deg, #10b981 0%, #059669 100%);
+            color: white;
+            padding: 12px 20px;
+            border-radius: 50px;
+            font-weight: 600;
+            font-size: 14px;
+            box-shadow: 0 4px 12px rgba(16, 185, 129, 0.3);
+            margin-bottom: 20px;
+        }
+
+        .card {
+            background: white;
+            border-radius: 16px;
+            padding: 30px;
+            margin-bottom: 20px;
+            box-shadow: 0 10px 30px rgba(0, 0, 0, 0.1);
+        }
+
+        .card h2 {
+            color: #333;
+            font-size: 24px;
+            margin-bottom: 20px;
+            padding-bottom: 15px;
+            border-bottom: 2px solid #f0f0f0;
+        }
+
+        .info-grid {
+            display: grid;
+            gap: 20px;
+        }
+
+        .info-row {
+            display: grid;
+            grid-template-columns: 200px 1fr;
+            gap: 20px;
+            padding: 15px;
+            border-radius: 8px;
+            transition: background 0.2s;
+        }
+
+        .info-row:hover {
+            background: #f9fafb;
+        }
+
+        .info-label {
+            font-weight: 600;
+            color: #666;
+            font-size: 14px;
+        }
+
+        .info-value {
+            color: #333;
+            word-break: break-all;
+            font-family: 'Monaco', 'Courier New', monospace;
+            font-size: 14px;
+        }
+
+        .hash {
+            color: #667eea;
+            font-weight: 500;
+        }
+
+        .ipfs-link {
+            display: inline-flex;
+            align-items: center;
+            gap: 8px;
+            color: #667eea;
+            text-decoration: none;
+            font-weight: 500;
+            padding: 8px 16px;
+            border-radius: 8px;
+            background: #f0f4ff;
+            transition: all 0.2s;
+        }
+
+        .ipfs-link:hover {
+            background: #667eea;
+            color: white;
+        }
+
+        .status-badge {
+            display: inline-flex;
+            align-items: center;
+            gap: 6px;
+            padding: 6px 12px;
+            border-radius: 20px;
+            font-size: 13px;
+            font-weight: 600;
+        }
+
+        .status-success {
+            background: #d1fae5;
+            color: #065f46;
+        }
+
+        .network-badge {
+            display: inline-flex;
+            align-items: center;
+            gap: 6px;
+            padding: 8px 16px;
+            border-radius: 20px;
+            font-size: 13px;
+            font-weight: 600;
+            background: linear-gradient(135deg, #fbbf24 0%, #f59e0b 100%);
+            color: white;
+        }
+
+        .loading {
+            text-align: center;
+            padding: 60px;
+            color: white;
+            font-size: 18px;
+        }
+
+        .error {
+            background: #fee2e2;
+            border: 2px solid #ef4444;
+            color: #991b1b;
+            padding: 20px;
+            border-radius: 12px;
+            margin: 20px 0;
+        }
+
+        .file-size {
+            font-weight: 600;
+            color: #667eea;
+        }
+
+        .timestamp {
+            color: #666;
+        }
+
+        @media (max-width: 768px) {
+            .info-row {
+                grid-template-columns: 1fr;
+                gap: 8px;
+            }
+
+            .header h1 {
+                font-size: 24px;
+            }
+        }
+
+        .shimmer {
+            background: linear-gradient(90deg, #f0f0f0 25%, #e0e0e0 50%, #f0f0f0 75%);
+            background-size: 200% 100%;
+            animation: shimmer 1.5s infinite;
+        }
+
+        @keyframes shimmer {
+            0% {
+                background-position: 200% 0;
+            }
+            100% {
+                background-position: -200% 0;
+            }
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="header">
+            <h1>
+                🔗 Blockchain Explorer
+            </h1>
+            <p class="subtitle">SmartFileTransfer - Decentralized File Audit Trail</p>
+        </div>
+
+        <div id="content">
+            <div class="loading">⏳ Loading transaction details...</div>
+        </div>
+    </div>
+
+    <script>
+        // Get transaction hash from URL
+        const urlParams = new URLSearchParams(window.location.search);
+        const txHash = urlParams.get('tx') || window.location.pathname.split('/').pop();
+
+        async function loadTransaction() {
+            try {
+                const response = await fetch(`/api/blockchain/transaction/${txHash}`);
+                
+                if (!response.ok) {
+                    throw new Error(`Transaction not found (${response.status})`);
+                }
+
+                const data = await response.json();
+                displayTransaction(data);
+            } catch (error) {
+                console.error('Failed to load transaction:', error);
+                document.getElementById('content').innerHTML = `
+                    <div class="card error">
+                        <h2>❌ Transaction Not Found</h2>
+                        <p><strong>Transaction Hash:</strong> ${txHash}</p>
+                        <p><strong>Error:</strong> ${error.message}</p>
+                        <p style="margin-top: 15px;">This transaction may not exist or has not been recorded yet.</p>
+                    </div>
+                `;
+            }
+        }
+
+        function displayTransaction(data) {
+            const date = new Date(data.timestamp);
+            const formattedDate = date.toLocaleString('en-US', {
+                year: 'numeric',
+                month: 'long',
+                day: 'numeric',
+                hour: '2-digit',
+                minute: '2-digit',
+                second: '2-digit',
+                timeZoneName: 'short'
+            });
+
+            const fileSize = formatFileSize(data.file_size);
+
+            document.getElementById('content').innerHTML = `
+                <div class="verified-badge">
+                    ✅ Verified on Blockchain
+                </div>
+
+                <div class="card">
+                    <h2>📋 Transaction Details</h2>
+                    <div class="info-grid">
+                        <div class="info-row">
+                            <div class="info-label">Transaction Hash</div>
+                            <div class="info-value hash">${data.tx_hash}</div>
+                        </div>
+                        <div class="info-row">
+                            <div class="info-label">Status</div>
+                            <div class="info-value">
+                                <span class="status-badge status-success">
+                                    ✓ Confirmed
+                                </span>
+                            </div>
+                        </div>
+                        <div class="info-row">
+                            <div class="info-label">Block Number</div>
+                            <div class="info-value hash">#${data.block_number.toLocaleString()}</div>
+                        </div>
+                        <div class="info-row">
+                            <div class="info-label">Timestamp</div>
+                            <div class="info-value timestamp">${formattedDate}</div>
+                        </div>
+                        <div class="info-row">
+                            <div class="info-label">Network</div>
+                            <div class="info-value">
+                                <span class="network-badge">
+                                    ⚡ ${data.network}
+                                </span>
+                            </div>
+                        </div>
+                        <div class="info-row">
+                            <div class="info-label">Gas Used</div>
+                            <div class="info-value">${data.gas_used.toLocaleString()} units</div>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="card">
+                    <h2>📦 File Information</h2>
+                    <div class="info-grid">
+                        <div class="info-row">
+                            <div class="info-label">File Name</div>
+                            <div class="info-value">${data.file_name}</div>
+                        </div>
+                        <div class="info-row">
+                            <div class="info-label">File Size</div>
+                            <div class="info-value file-size">${fileSize}</div>
+                        </div>
+                        <div class="info-row">
+                            <div class="info-label">File Hash (SHA-256)</div>
+                            <div class="info-value hash">${data.file_hash}</div>
+                        </div>
+                        ${data.ipfs_cid ? `
+                        <div class="info-row">
+                            <div class="info-label">IPFS Storage</div>
+                            <div class="info-value">
+                                <a href="https://ipfs.io/ipfs/${data.ipfs_cid}" 
+                                   target="_blank" 
+                                   class="ipfs-link">
+                                    ${data.ipfs_cid}
+                                    <span>↗</span>
+                                </a>
+                                <br><br>
+                                <a href="https://gateway.pinata.cloud/ipfs/${data.ipfs_cid}" 
+                                   target="_blank" 
+                                   class="ipfs-link">
+                                    View on Pinata Gateway
+                                    <span>↗</span>
+                                </a>
+                            </div>
+                        </div>
+                        ` : ''}
+                    </div>
+                </div>
+
+                <div class="card">
+                    <h2>👥 Transfer Details</h2>
+                    <div class="info-grid">
+                        <div class="info-row">
+                            <div class="info-label">Sender ID</div>
+                            <div class="info-value hash">${data.sender_id}</div>
+                        </div>
+                        <div class="info-row">
+                            <div class="info-label">Receiver ID</div>
+                            <div class="info-value hash">${data.receiver_id || 'N/A'}</div>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="card" style="background: linear-gradient(135deg, #f0f4ff 0%, #e0e7ff 100%); border: 2px solid #667eea;">
+                    <h2>💡 What This Means</h2>
+                    <p style="color: #333; line-height: 1.8; font-size: 15px;">
+                        This file transfer has been permanently recorded on the blockchain, creating an 
+                        immutable audit trail. The file itself is stored on IPFS (InterPlanetary File System), 
+                        a decentralized storage network, ensuring it remains accessible even if traditional 
+                        servers go down. Anyone can verify this transfer by checking the transaction hash 
+                        or downloading the file directly from IPFS using the CID above.
+                    </p>
+                </div>
+            `;
+        }
+
+        function formatFileSize(bytes) {
+            if (bytes === 0) return '0 Bytes';
+            const k = 1024;
+            const sizes = ['Bytes', 'KB', 'MB', 'GB', 'TB'];
+            const i = Math.floor(Math.log(bytes) / Math.log(k));
+            return Math.round((bytes / Math.pow(k, i)) * 100) / 100 + ' ' + sizes[i];
+        }
+
+        // Load transaction on page load
+        loadTransaction();
+    </script>
+</body>
+</html>

@@ -7,6 +7,9 @@ from dependencies.auth import get_current_active_user
 from routers.websocket import chat_manager, notify_chat_file_progress, notify_chat_file_complete
 from utils.file_utils import save_upload_file, get_file_extension
 from utils.hash_utils import calculate_file_hash
+from services.blockchain_service import get_blockchain_service
+from services.ipfs_service import get_ipfs_service
+from services.certificate_service import get_certificate_service
 import os
 import shutil
 import uuid
@@ -1022,6 +1025,91 @@ async def complete_chat_file_upload(
         if file_id in upload_sessions:
             del upload_sessions[file_id]
         
+        # ✅ BLOCKCHAIN & IPFS RECORDING (Fire-and-forget, async)
+        blockchain_result = None
+        ipfs_result = None
+        certificate_path = None
+        
+        # Start blockchain and IPFS uploads in background (don't block response)
+        async def record_blockchain_and_ipfs():
+            nonlocal blockchain_result, ipfs_result, certificate_path
+            
+            try:
+                # Upload to IPFS first (if configured)
+                ipfs_service = get_ipfs_service()
+                ipfs_result = await ipfs_service.upload_file(
+                    file_path=final_path,
+                    file_name=filename
+                )
+                
+                if ipfs_result.get('success'):
+                    print(f"✅ IPFS upload successful: {ipfs_result.get('cid')}")
+                else:
+                    print(f"⚠️ IPFS upload skipped: {ipfs_result.get('error', 'Not configured')}")
+                
+            except Exception as ipfs_error:
+                print(f"⚠️ IPFS upload failed: {ipfs_error}")
+                ipfs_result = {'success': False, 'error': str(ipfs_error)}
+            
+            try:
+                # Record on blockchain
+                blockchain_service = get_blockchain_service()
+                blockchain_result = await blockchain_service.record_transfer(
+                    file_hash=actual_hash,
+                    file_name=filename,
+                    sender_id=user_id,
+                    receiver_id=room_id,
+                    ipfs_cid=ipfs_result.get('cid', '') if ipfs_result else '',
+                    file_size=file_size
+                )
+                
+                if blockchain_result.get('success'):
+                    print(f"✅ Blockchain recording successful: {blockchain_result.get('transaction_hash')}")
+                    print(f"🔗 View on Etherscan: {blockchain_result.get('explorer_url')}")
+                    
+                    # Generate proof certificate
+                    try:
+                        certificate_service = get_certificate_service()
+                        certificate_pdf = certificate_service.generate_blockchain_certificate(
+                            file_info={
+                                'name': filename,
+                                'size': file_size,
+                                'hash': actual_hash,
+                                'sender_id': user_id,
+                                'receiver_id': receiver_id,
+                                'room_id': room_id,
+                                'timestamp': datetime.now().isoformat()
+                            },
+                            blockchain_info=blockchain_result,
+                            ipfs_info=ipfs_result if ipfs_result and ipfs_result.get('success') else None
+                        )
+                        
+                        # Save certificate
+                        os.makedirs("certificates", exist_ok=True)
+                        certificate_path = f"certificates/{file_id}_proof.pdf"
+                        with open(certificate_path, 'wb') as f:
+                            f.write(certificate_pdf)
+                        
+                        print(f"📄 Certificate generated: {certificate_path}")
+                        
+                    except Exception as cert_error:
+                        print(f"⚠️ Certificate generation failed: {cert_error}")
+                        
+                else:
+                    print(f"⚠️ Blockchain recording failed: {blockchain_result.get('error', 'Unknown error')}")
+                    
+            except Exception as blockchain_error:
+                print(f"⚠️ Blockchain recording failed: {blockchain_error}")
+                blockchain_result = {'success': False, 'error': str(blockchain_error)}
+        
+        # Start background task and wait for it to complete (with timeout)
+        try:
+            await asyncio.wait_for(record_blockchain_and_ipfs(), timeout=5.0)
+        except asyncio.TimeoutError:
+            print(f"⚠️ Blockchain/IPFS recording timed out after 5s")
+        except Exception as bg_error:
+            print(f"⚠️ Background task error: {bg_error}")
+        
         # ✅ FIRE-AND-FORGET MESSAGE CREATION (Non-blocking background task)
         # Create message asynchronously without blocking response
         message_data = None
@@ -1038,7 +1126,12 @@ async def complete_chat_file_upload(
                     file_name=filename,
                     file_size=file_size,
                     file_hash=actual_hash,
-                    reply_to_id=reply_to_id
+                    reply_to_id=reply_to_id,
+                    # ✅ NEW: Pass blockchain/IPFS data
+                    blockchain_tx_hash=blockchain_result.get('transaction_hash') if blockchain_result and blockchain_result.get('success') else None,
+                    blockchain_block_number=blockchain_result.get('block_number') if blockchain_result and blockchain_result.get('success') else None,
+                    ipfs_cid=ipfs_result.get('cid') if ipfs_result and ipfs_result.get('success') else None,
+                    certificate_url=f"/certificates/{file_id}_proof.pdf" if certificate_path and os.path.exists(certificate_path) else None
                 ),
                 timeout=3.0  # Reduced from 5s to fail faster
             )
@@ -1069,7 +1162,11 @@ async def complete_chat_file_upload(
             "file_hash": actual_hash,
             "message_id": message_data["id"] if message_data else None,
             "message_created": message_data is not None,
-            "message_error": message_error  # Include error info for frontend
+            "message_error": message_error,  # Include error info for frontend
+            # Blockchain proof
+            "blockchain": blockchain_result if blockchain_result else {'success': False, 'error': 'Not available'},
+            "ipfs": ipfs_result if ipfs_result else {'success': False, 'error': 'Not available'},
+            "certificate_url": f"/certificates/{file_id}_proof.pdf" if certificate_path and os.path.exists(certificate_path) else None
         }
         
         print(f"📤 Upload completion response: {result}")
@@ -1173,6 +1270,79 @@ async def retry_message_creation(
         raise HTTPException(
             status_code=500,
             detail=f"Failed to retry message creation: {str(e)}"
+        )
+
+
+# ✅ BLOCKCHAIN VERIFICATION ENDPOINTS
+
+@router.get("/files/{file_hash}/blockchain-status")
+async def get_blockchain_status(
+    file_hash: str,
+    current_user: dict = Depends(get_current_active_user)
+):
+    """Get blockchain verification status for a file"""
+    try:
+        blockchain_service = get_blockchain_service()
+        
+        if not blockchain_service.enabled:
+            return {
+                "blockchain_enabled": False,
+                "message": "Blockchain service not configured"
+            }
+        
+        # Check if transfer exists on blockchain
+        transfer = await blockchain_service.get_transfer(file_hash)
+        
+        if transfer:
+            return {
+                "blockchain_enabled": True,
+                "verified": True,
+                "transfer": transfer,
+                "explorer_url": blockchain_service.get_explorer_url(transfer.get('transaction_hash', '')),
+                "contract_url": blockchain_service.get_contract_explorer_url()
+            }
+        else:
+            return {
+                "blockchain_enabled": True,
+                "verified": False,
+                "message": "Transfer not found on blockchain"
+            }
+            
+    except Exception as e:
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to check blockchain status: {str(e)}"
+        )
+
+
+@router.get("/certificates/{file_id}_proof.pdf")
+async def download_certificate(
+    file_id: str,
+    current_user: dict = Depends(get_current_active_user)
+):
+    """Download blockchain proof certificate"""
+    try:
+        certificate_path = f"certificates/{file_id}_proof.pdf"
+        
+        if not os.path.exists(certificate_path):
+            raise HTTPException(
+                status_code=404,
+                detail="Certificate not found. It may still be generating."
+            )
+        
+        from fastapi.responses import FileResponse
+        return FileResponse(
+            path=certificate_path,
+            media_type='application/pdf',
+            filename=f"blockchain_proof_{file_id}.pdf"
+        )
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to download certificate: {str(e)}"
         )
 
 
@@ -1312,3 +1482,54 @@ async def search_room_messages(
         raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+
+
+# ✅ BLOCKCHAIN ENDPOINTS
+
+@router.get("/api/blockchain/transaction/{tx_hash}")
+async def get_blockchain_transaction(tx_hash: str):
+    """Get blockchain transaction details (public endpoint - no auth required)"""
+    try:
+        blockchain_service = get_blockchain_service()
+        transaction = await blockchain_service.get_transaction(tx_hash)
+        
+        if not transaction:
+            raise HTTPException(status_code=404, detail="Transaction not found")
+        
+        return transaction
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"❌ Failed to get transaction: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/blockchain/explorer/tx/{tx_hash}")
+async def blockchain_explorer_page(tx_hash: str):
+    """Serve blockchain explorer HTML page"""
+    from fastapi.responses import FileResponse
+    
+    explorer_path = os.path.join(os.path.dirname(__file__), "..", "blockchain_explorer.html")
+    
+    if not os.path.exists(explorer_path):
+        raise HTTPException(status_code=404, detail="Explorer page not found")
+    
+    return FileResponse(explorer_path, media_type="text/html")
+
+
+@router.get("/certificates/{file_id}_proof.pdf")
+async def download_certificate(file_id: str):
+    """Download blockchain proof certificate"""
+    from fastapi.responses import FileResponse
+    
+    cert_path = f"certificates/{file_id}_proof.pdf"
+    
+    if not os.path.exists(cert_path):
+        raise HTTPException(status_code=404, detail="Certificate not found")
+    
+    return FileResponse(
+        cert_path,
+        media_type="application/pdf",
+        filename=f"{file_id}_blockchain_proof.pdf"
+    )
