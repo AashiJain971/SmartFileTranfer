@@ -139,14 +139,49 @@ class IPFSService:
             
             async with aiohttp.ClientSession() as session:
                 print("   Uploading to Pinata IPFS...")
+                print(f"   URL: {self.pinata_upload_url}")
+                print(f"   Timeout: {timeout_seconds}s")
+                
+                # Test Pinata connectivity first
+                try:
+                    print("   🔍 Testing Pinata API connectivity...")
+                    test_headers = {'Authorization': f'Bearer {self.pinata_jwt}'} if self.pinata_jwt else {
+                        'pinata_api_key': self.pinata_api_key,
+                        'pinata_secret_api_key': self.pinata_secret_key
+                    }
+                    async with session.get(
+                        'https://api.pinata.cloud/data/testAuthentication',
+                        headers=test_headers,
+                        timeout=aiohttp.ClientTimeout(total=10)
+                    ) as test_response:
+                        if test_response.status == 200:
+                            test_result = await test_response.json()
+                            print(f"   ✅ Pinata auth valid: {test_result}")
+                        else:
+                            error_text = await test_response.text()
+                            print(f"   ❌ Pinata auth failed (HTTP {test_response.status}): {error_text}")
+                            return {
+                                'success': False,
+                                'error': f'Pinata authentication failed: {error_text}',
+                                'status_code': test_response.status
+                            }
+                except Exception as test_err:
+                    print(f"   ⚠️ Pinata connectivity test failed: {test_err}")
+                    print(f"   Continuing with upload anyway...")
                 
                 try:
+                    print("   📡 Starting HTTP POST request...")
                     async with session.post(
                         self.pinata_upload_url,
                         data=form_data,
                         headers=headers,
-                        timeout=aiohttp.ClientTimeout(total=timeout_seconds)
+                        timeout=aiohttp.ClientTimeout(
+                            total=timeout_seconds,
+                            connect=30,  # 30s to establish connection
+                            sock_read=120  # 120s between data packets
+                        )
                     ) as response:
+                        print(f"   📥 Got response: HTTP {response.status}")
                         
                         if response.status != 200:
                             error_text = await response.text()
@@ -157,6 +192,7 @@ class IPFSService:
                                 'status_code': response.status
                             }
                         
+                        print("   📝 Parsing JSON response...")
                         result = await response.json()
                         cid = result.get('IpfsHash')
                         
@@ -182,9 +218,26 @@ class IPFSService:
                             'file_name': file_name or Path(file_path).name,
                             'pinata_url': f"https://gateway.pinata.cloud/ipfs/{cid}"
                         }
+                
+                except asyncio.TimeoutError as timeout_err:
+                    print(f"   ❌ IPFS upload timeout: {timeout_err}")
+                    raise  # Re-raise to be caught by outer handler
+                
+                except aiohttp.ClientError as client_err:
+                    print(f"   ❌ HTTP client error: {client_err}")
+                    raise
+                
+                except Exception as inner_err:
+                    print(f"   ❌ Unexpected error during upload: {inner_err}")
+                    import traceback
+                    traceback.print_exc()
+                    raise
+                
                 finally:
                     # ✅ Always close file handle
+                    print("   🔒 Closing file handle...")
                     file_handle.close()
+                    print("   ✅ File handle closed")
                     
         except asyncio.TimeoutError:
             print(f"   ❌ IPFS upload timeout ({timeout_seconds}s exceeded)")
