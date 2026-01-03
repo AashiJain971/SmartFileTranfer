@@ -2361,7 +2361,37 @@
             localStorage.removeItem('refreshToken');
             localStorage.removeItem('user');
             
-            // Disconnect websocket if connected
+            // ✅ Disconnect chat websocket if connected
+            if (appState.chatWs) {
+                try {
+                    appState.chatWs.close();
+                    appState.chatWs = null;
+                    logSystem('Chat WebSocket disconnected', 'info');
+                } catch (error) {
+                    console.error('Error disconnecting chat WebSocket:', error);
+                }
+            }
+            
+            // ✅ Disconnect room websocket if connected
+            if (appState.roomWs) {
+                try {
+                    appState.roomWs.close();
+                    appState.roomWs = null;
+                } catch (error) {
+                    console.error('Error disconnecting room WebSocket:', error);
+                }
+            }
+            
+            // ✅ Stop heartbeat
+            if (appState.heartbeatInterval) {
+                clearInterval(appState.heartbeatInterval);
+                appState.heartbeatInterval = null;
+            }
+            
+            // Update connection status
+            updateConnectionStatus('disconnected');
+            
+            // Disconnect legacy websocket if connected
             disconnectWebSocket();
             
             // Show auth section
@@ -3536,8 +3566,18 @@
                     logSystem('Using default network settings', 'warning');
                 }
                 
-                // Load rooms first - WebSocket connections will be created when selecting rooms
-                // This prevents conflicts between general chat WebSocket and room-specific WebSockets
+                // ✅ CONNECT TO GENERAL CHAT WEBSOCKET IMMEDIATELY ON LOGIN
+                try {
+                    updateConnectionStatus('connecting');
+                    await connectChatWebSocket();
+                    console.log('✅ Chat WebSocket connected successfully');
+                } catch (error) {
+                    console.warn('⚠️ WebSocket connection failed:', error);
+                    logSystem('WebSocket connection failed, but application will continue', 'warning');
+                    updateConnectionStatus('disconnected');
+                }
+                
+                // Load rooms after WebSocket is connected
                 try {
                     await loadChatRooms();
                     console.log('✅ Chat rooms loaded successfully');
@@ -3545,10 +3585,6 @@
                     console.warn('⚠️ Room loading failed:', error);
                     logSystem('Failed to load chat rooms, but application will continue', 'warning');
                 }
-                
-                // Note: WebSocket connections will be established when users select specific rooms
-                // This prevents connection conflicts between general and room-specific WebSockets
-                console.log('🔌 WebSocket connections will be created per room selection');
                 
                 // Try to ensure there's an active room, but don't fail if it doesn't work
                 try {

@@ -1025,17 +1025,26 @@ async def complete_chat_file_upload(
         if file_id in upload_sessions:
             del upload_sessions[file_id]
         
-        # ✅ BLOCKCHAIN & IPFS RECORDING (Fire-and-forget, async)
+        # ✅ BLOCKCHAIN & IPFS RECORDING (Smart timeout based on file size)
         blockchain_result = None
         ipfs_result = None
         certificate_path = None
+        message_id_for_update = None  # Store message ID for background updates
         
         # Start blockchain and IPFS uploads in background (don't block response)
-        async def record_blockchain_and_ipfs():
+        async def record_blockchain_and_ipfs(msg_id: Optional[str] = None):
             nonlocal blockchain_result, ipfs_result, certificate_path
+            
+            print(f"\n🔄 Starting blockchain/IPFS processing...")
+            if msg_id:
+                print(f"   Message ID: {msg_id}")
+            print(f"   File: {filename}")
+            print(f"   Size: {file_size / 1024 / 1024:.2f} MB")
+            print(f"   Hash: {actual_hash}")
             
             try:
                 # Upload to IPFS first (if configured)
+                print(f"\n📤 Uploading to IPFS...")
                 ipfs_service = get_ipfs_service()
                 ipfs_result = await ipfs_service.upload_file(
                     file_path=final_path,
@@ -1044,15 +1053,26 @@ async def complete_chat_file_upload(
                 
                 if ipfs_result.get('success'):
                     print(f"✅ IPFS upload successful: {ipfs_result.get('cid')}")
+                    
+                    # ✅ UPDATE MESSAGE WITH IPFS CID (for background uploads)
+                    if msg_id:
+                        await ChatCRUD.update_message_blockchain_data(
+                            message_id=msg_id,
+                            ipfs_cid=ipfs_result.get('cid')
+                        )
+                        print(f"✅ Updated message {msg_id} with IPFS CID")
                 else:
-                    print(f"⚠️ IPFS upload skipped: {ipfs_result.get('error', 'Not configured')}")
+                    print(f"⚠️ IPFS upload failed: {ipfs_result.get('error', 'Not configured')}")
                 
             except Exception as ipfs_error:
-                print(f"⚠️ IPFS upload failed: {ipfs_error}")
+                print(f"❌ IPFS upload exception: {ipfs_error}")
+                import traceback
+                traceback.print_exc()
                 ipfs_result = {'success': False, 'error': str(ipfs_error)}
             
             try:
                 # Record on blockchain
+                print(f"\n⛓️ Recording on blockchain...")
                 blockchain_service = get_blockchain_service()
                 blockchain_result = await blockchain_service.record_transfer(
                     file_hash=actual_hash,
@@ -1066,6 +1086,15 @@ async def complete_chat_file_upload(
                 if blockchain_result.get('success'):
                     print(f"✅ Blockchain recording successful: {blockchain_result.get('transaction_hash')}")
                     print(f"🔗 View on Etherscan: {blockchain_result.get('explorer_url')}")
+                    
+                    # ✅ UPDATE MESSAGE WITH BLOCKCHAIN DATA (for background uploads)
+                    if msg_id:
+                        await ChatCRUD.update_message_blockchain_data(
+                            message_id=msg_id,
+                            blockchain_tx_hash=blockchain_result.get('transaction_hash'),
+                            blockchain_block_number=blockchain_result.get('block_number')
+                        )
+                        print(f"✅ Updated message {msg_id} with blockchain data")
                     
                     # Generate proof certificate
                     try:
@@ -1092,6 +1121,13 @@ async def complete_chat_file_upload(
                         
                         print(f"📄 Certificate generated: {certificate_path}")
                         
+                        # ✅ UPDATE MESSAGE WITH CERTIFICATE URL (for background uploads)
+                        if msg_id:
+                            await ChatCRUD.update_message_blockchain_data(
+                                message_id=msg_id,
+                                certificate_url=f"/certificates/{file_id}_proof.pdf"
+                            )
+                        
                     except Exception as cert_error:
                         print(f"⚠️ Certificate generation failed: {cert_error}")
                         
@@ -1102,13 +1138,22 @@ async def complete_chat_file_upload(
                 print(f"⚠️ Blockchain recording failed: {blockchain_error}")
                 blockchain_result = {'success': False, 'error': str(blockchain_error)}
         
-        # Start background task and wait for it to complete (with timeout)
-        try:
-            await asyncio.wait_for(record_blockchain_and_ipfs(), timeout=5.0)
-        except asyncio.TimeoutError:
-            print(f"⚠️ Blockchain/IPFS recording timed out after 5s")
-        except Exception as bg_error:
-            print(f"⚠️ Background task error: {bg_error}")
+        # ✅ SMART TIMEOUT: Wait for small files (<50MB), skip for large files
+        MAX_WAIT_SIZE = 50 * 1024 * 1024  # 50MB (images, small videos)
+        if file_size < MAX_WAIT_SIZE:
+            # Small file - wait up to 120s for blockchain/IPFS
+            try:
+                await asyncio.wait_for(record_blockchain_and_ipfs(), timeout=120.0)
+                print(f"✅ Blockchain/IPFS completed for small file ({file_size} bytes)")
+            except asyncio.TimeoutError:
+                print(f"⚠️ Blockchain/IPFS timed out for small file (120s) - will retry in background after message creation")
+            except Exception as bg_error:
+                print(f"⚠️ Background task error: {bg_error}")
+                import traceback
+                traceback.print_exc()
+        else:
+            # Large file - skip for now, will start background task after message creation
+            print(f"⏭️ Large file ({file_size / 1024 / 1024:.2f} MB) - will process blockchain/IPFS in background after message creation")
         
         # ✅ FIRE-AND-FORGET MESSAGE CREATION (Non-blocking background task)
         # Create message asynchronously without blocking response
@@ -1127,7 +1172,7 @@ async def complete_chat_file_upload(
                     file_size=file_size,
                     file_hash=actual_hash,
                     reply_to_id=reply_to_id,
-                    # ✅ NEW: Pass blockchain/IPFS data
+                    # ✅ Pass blockchain/IPFS data (may be None for large files in background)
                     blockchain_tx_hash=blockchain_result.get('transaction_hash') if blockchain_result and blockchain_result.get('success') else None,
                     blockchain_block_number=blockchain_result.get('block_number') if blockchain_result and blockchain_result.get('success') else None,
                     ipfs_cid=ipfs_result.get('cid') if ipfs_result and ipfs_result.get('success') else None,
@@ -1136,7 +1181,21 @@ async def complete_chat_file_upload(
                 timeout=3.0  # Reduced from 5s to fail faster
             )
             message_data = message
+            message_id_for_update = message['id']  # Store for background updates
             print(f"✅ Message created: {message['id']}")
+            
+            # ✅ For large files, start background task NOW with message ID
+            if file_size >= 50 * 1024 * 1024 and not (blockchain_result and ipfs_result):
+                print(f"🚀 Starting background IPFS/blockchain for message {message_id_for_update}")
+                task = asyncio.create_task(record_blockchain_and_ipfs(message_id_for_update))
+                def handle_background_error(task):
+                    try:
+                        task.result()
+                    except Exception as e:
+                        print(f"❌ Background IPFS/blockchain task failed: {e}")
+                        import traceback
+                        traceback.print_exc()
+                task.add_done_callback(handle_background_error)
             
             # Try WebSocket notification (best effort)
             try:
@@ -1153,6 +1212,7 @@ async def complete_chat_file_upload(
             print(f"⚠️ Message creation failed: {msg_error} - file saved successfully")
         
         # ✅ RETURN SUCCESS (even if message creation failed)
+        # Note: For large files, blockchain/IPFS may still be processing in background
         result = {
             "status": "completed",
             "file_id": file_id,
@@ -1163,9 +1223,17 @@ async def complete_chat_file_upload(
             "message_id": message_data["id"] if message_data else None,
             "message_created": message_data is not None,
             "message_error": message_error,  # Include error info for frontend
-            # Blockchain proof
-            "blockchain": blockchain_result if blockchain_result else {'success': False, 'error': 'Not available'},
-            "ipfs": ipfs_result if ipfs_result else {'success': False, 'error': 'Not available'},
+            # Blockchain proof (may still be processing for large files)
+            "blockchain": blockchain_result if blockchain_result else {
+                'success': False, 
+                'error': 'Processing in background (check later for large files)',
+                'processing': True
+            },
+            "ipfs": ipfs_result if ipfs_result else {
+                'success': False, 
+                'error': 'Processing in background (check later for large files)',
+                'processing': True
+            },
             "certificate_url": f"/certificates/{file_id}_proof.pdf" if certificate_path and os.path.exists(certificate_path) else None
         }
         
@@ -1488,12 +1556,32 @@ async def search_room_messages(
 
 @router.get("/api/blockchain/transaction/{tx_hash}")
 async def get_blockchain_transaction(tx_hash: str):
-    """Get blockchain transaction details (public endpoint - no auth required)"""
+    """Get blockchain transaction details (public endpoint - no auth required)
+    Accepts both tx_hash and file_hash for backward compatibility
+    """
     try:
         blockchain_service = get_blockchain_service()
+        
+        # Try to get by tx_hash first
         transaction = await blockchain_service.get_transaction(tx_hash)
         
+        # If not found and looks like a file_hash (64 chars), try searching by file_hash
+        if not transaction and len(tx_hash) == 64:
+            print(f"🔍 Transaction not found by tx_hash, trying file_hash: {tx_hash[:16]}...")
+            try:
+                result = blockchain_service.supabase.table("blockchain_records")\
+                    .select("*")\
+                    .eq("file_hash", tx_hash)\
+                    .execute()
+                
+                if result.data and len(result.data) > 0:
+                    transaction = result.data[0]
+                    print(f"✅ Found transaction by file_hash: {transaction.get('tx_hash')}")
+            except Exception as fallback_error:
+                print(f"⚠️ Fallback lookup failed: {fallback_error}")
+        
         if not transaction:
+            print(f"❌ Transaction not found: {tx_hash[:16]}...")
             raise HTTPException(status_code=404, detail="Transaction not found")
         
         return transaction

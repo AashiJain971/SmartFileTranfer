@@ -93,22 +93,25 @@ class IPFSService:
         file_path: str,
         file_name: Optional[str] = None
     ) -> Dict[str, Any]:
-        """Upload file to Pinata IPFS"""
+        """Upload file to Pinata IPFS using streaming for large files"""
         try:
             print(f"\n📤 Uploading to Pinata IPFS: {file_name or file_path}")
             
-            # Read file
-            with open(file_path, 'rb') as f:
-                file_data = f.read()
-            
-            file_size = len(file_data)
+            # Get file size without reading entire file
+            file_size = os.path.getsize(file_path)
             print(f"   File size: {file_size / 1024 / 1024:.2f} MB")
+            print(f"   File path: {file_path}")
+            print(f"   File exists: {os.path.exists(file_path)}")
+            
+            # ✅ Stream file instead of loading into memory (crucial for large files)
+            file_handle = open(file_path, 'rb')
+            print("   ✅ File handle opened successfully")
             
             # Prepare multipart form data for Pinata
             form_data = aiohttp.FormData()
             form_data.add_field(
                 'file',
-                file_data,
+                file_handle,  # ✅ Pass file handle for streaming
                 filename=file_name or Path(file_path).name,
                 content_type='application/octet-stream'
             )
@@ -126,56 +129,68 @@ class IPFSService:
                 }
                 print("   Using Pinata API Key authentication (legacy)")
             
+            # ✅ Dynamic timeout based on file size
+            # Base 120s + 90s per 100MB (min 120s, max 30 minutes)
+            # For 163MB: 120 + (1.63 * 90) = 267s (~4.5 min)
+            # For 1GB: 120 + (10 * 90) = 1020s (~17 min)
+            mb_size = file_size / (1024 * 1024)
+            timeout_seconds = max(120, min(1800, int(120 + (mb_size / 100) * 90)))
+            print(f"   Upload timeout: {timeout_seconds}s ({timeout_seconds/60:.1f} min)")
+            
             async with aiohttp.ClientSession() as session:
                 print("   Uploading to Pinata IPFS...")
                 
-                async with session.post(
-                    self.pinata_upload_url,
-                    data=form_data,
-                    headers=headers,
-                    timeout=aiohttp.ClientTimeout(total=300)  # 5 minute timeout
-                ) as response:
-                    
-                    if response.status != 200:
-                        error_text = await response.text()
-                        print(f"   ❌ Upload failed: {error_text}")
+                try:
+                    async with session.post(
+                        self.pinata_upload_url,
+                        data=form_data,
+                        headers=headers,
+                        timeout=aiohttp.ClientTimeout(total=timeout_seconds)
+                    ) as response:
+                        
+                        if response.status != 200:
+                            error_text = await response.text()
+                            print(f"   ❌ Upload failed: {error_text}")
+                            return {
+                                'success': False,
+                                'error': error_text,
+                                'status_code': response.status
+                            }
+                        
+                        result = await response.json()
+                        cid = result.get('IpfsHash')
+                        
+                        if not cid:
+                            print(f"   ❌ No CID in response: {result}")
+                            return {
+                                'success': False,
+                                'error': 'No CID returned',
+                                'response': result
+                            }
+                        
+                        print(f"   ✅ Uploaded to IPFS: {cid}")
+                        
+                        # Generate gateway URLs
+                        gateway_urls = [f"{gateway}{cid}" for gateway in self.public_gateways]
+                        
                         return {
-                            'success': False,
-                            'error': error_text,
-                            'status_code': response.status
+                            'success': True,
+                            'cid': cid,
+                            'size': file_size,
+                            'gateway_urls': gateway_urls,
+                            'primary_url': gateway_urls[1],  # Use Pinata gateway as primary
+                            'file_name': file_name or Path(file_path).name,
+                            'pinata_url': f"https://gateway.pinata.cloud/ipfs/{cid}"
                         }
-                    
-                    result = await response.json()
-                    cid = result.get('IpfsHash')
-                    
-                    if not cid:
-                        print(f"   ❌ No CID in response: {result}")
-                        return {
-                            'success': False,
-                            'error': 'No CID returned',
-                            'response': result
-                        }
-                    
-                    print(f"   ✅ Uploaded to IPFS: {cid}")
-                    
-                    # Generate gateway URLs
-                    gateway_urls = [f"{gateway}{cid}" for gateway in self.public_gateways]
-                    
-                    return {
-                        'success': True,
-                        'cid': cid,
-                        'size': file_size,
-                        'gateway_urls': gateway_urls,
-                        'primary_url': gateway_urls[1],  # Use Pinata gateway as primary
-                        'file_name': file_name or Path(file_path).name,
-                        'pinata_url': f"https://gateway.pinata.cloud/ipfs/{cid}"
-                    }
+                finally:
+                    # ✅ Always close file handle
+                    file_handle.close()
                     
         except asyncio.TimeoutError:
-            print("   ❌ IPFS upload timeout (file too large or slow connection)")
+            print(f"   ❌ IPFS upload timeout ({timeout_seconds}s exceeded)")
             return {
                 'success': False,
-                'error': 'Upload timeout',
+                'error': f'Upload timeout ({timeout_seconds}s)',
                 'cid': None
             }
         except Exception as e:

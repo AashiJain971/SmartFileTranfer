@@ -55,10 +55,14 @@ async def lifespan(app: FastAPI):
     # Warm up database connections
     try:
         from db.auth_crud import warm_up_database_connections
-        await warm_up_database_connections()
-        print("✅ Database connections warmed up successfully")
+        success = await warm_up_database_connections()
+        if not success:
+            print("⚠️  Database unavailable - server will run in LIMITED MODE")
+            print("   💡 File uploads will work, but no auth/chat/persistence")
+            print("   🔧 Fix: Update SUPABASE_URL and SUPABASE_KEY in .env")
     except Exception as e:
-        print(f"⚠️  Warning: Database warm-up failed: {e}")
+        print(f"⚠️  Database connection error: {e}")
+        print("   Server running in LIMITED MODE (no database features)")
     
     # Clean up any stale uploads from previous runs
     try:
@@ -66,7 +70,8 @@ async def lifespan(app: FastAPI):
         cleaned_sessions = await cleanup_failed_sessions(hours_old=24)
         print(f"🧹 Cleaned up {cleaned_sessions} stale sessions")
     except Exception as e:
-        print(f"⚠️  Warning: Startup cleanup failed: {e}")
+        # Cleanup failure is OK - it will retry later
+        pass
     
     # Start background cleanup task
     cleanup_task = asyncio.create_task(periodic_cleanup())

@@ -122,13 +122,6 @@ async def signup(user_data: UserCreate, request: Request):
 async def login(login_data: UserLogin, request: Request):
     """Login user"""
     try:
-        # Check login attempts
-        if not auth_service.check_login_attempts(login_data.email):
-            raise HTTPException(
-                status_code=status.HTTP_429_TOO_MANY_REQUESTS,
-                detail=f"Too many failed login attempts. Try again in {settings.LOGIN_ATTEMPT_TIMEOUT_MINUTES} minutes."
-            )
-        
         # Get user with enhanced retry logic for login
         user = await get_user_by_email_with_login_retry(login_data.email)
         if not user:
@@ -138,8 +131,15 @@ async def login(login_data: UserLogin, request: Request):
                 detail="Invalid email or password"
             )
         
-        # Verify password
+        # Verify password FIRST (before checking rate limits)
+        # This allows correct passwords to bypass rate limiting
         if not auth_service.verify_password(login_data.password, user["password_hash"]):
+            # Only check rate limit for FAILED password attempts
+            if not auth_service.check_login_attempts(login_data.email):
+                raise HTTPException(
+                    status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+                    detail=f"Too many failed login attempts. Try again in {settings.LOGIN_ATTEMPT_TIMEOUT_MINUTES} minutes."
+                )
             auth_service.record_login_attempt(login_data.email, False)
             raise HTTPException(
                 status_code=status.HTTP_401_UNAUTHORIZED,
@@ -153,7 +153,7 @@ async def login(login_data: UserLogin, request: Request):
                 detail="Account is disabled"
             )
         
-        # Record successful login
+        # ✅ Password is correct - clear any failed attempts and allow login
         auth_service.record_login_attempt(login_data.email, True)
         
         # Generate tokens

@@ -24,7 +24,22 @@ async def warm_up_database_connections():
         
         return True
     except Exception as e:
-        print(f"❌ Database warm-up failed: {e}")
+        error_msg = str(e)
+        
+        # Provide helpful error diagnosis
+        if "nodename nor servname" in error_msg or "[Errno 8]" in error_msg:
+            print(f"❌ Database warm-up failed: DNS resolution error")
+            print(f"   💡 Check: 1) Internet connection 2) SUPABASE_URL in .env")
+            print(f"   📍 Current SUPABASE_URL: {settings.SUPABASE_URL[:30]}...")
+        elif "Connection refused" in error_msg:
+            print(f"❌ Database warm-up failed: Connection refused")
+            print(f"   💡 Check: Network/firewall or Supabase service status")
+        elif "timeout" in error_msg.lower():
+            print(f"❌ Database warm-up failed: Connection timeout")
+            print(f"   💡 Check: Internet speed or Supabase service status")
+        else:
+            print(f"❌ Database warm-up failed: {error_msg}")
+        
         return False
 
 async def retry_database_operation(operation_func, max_retries=None, delay=None):

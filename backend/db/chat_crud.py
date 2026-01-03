@@ -429,6 +429,40 @@ class ChatCRUD:
             raise Exception(f"Failed to send file message: {str(e)}")
     
     @staticmethod
+    async def update_message_blockchain_data(
+        message_id: str,
+        blockchain_tx_hash: Optional[str] = None,
+        blockchain_block_number: Optional[int] = None,
+        ipfs_cid: Optional[str] = None,
+        certificate_url: Optional[str] = None
+    ) -> bool:
+        """Update blockchain/IPFS data for an existing message (for background uploads)"""
+        try:
+            update_data = {}
+            if blockchain_tx_hash:
+                update_data["blockchain_tx_hash"] = blockchain_tx_hash
+            if blockchain_block_number:
+                update_data["blockchain_block_number"] = blockchain_block_number
+            if ipfs_cid:
+                update_data["ipfs_cid"] = ipfs_cid
+            if certificate_url:
+                update_data["certificate_url"] = certificate_url
+            
+            if not update_data:
+                return False
+            
+            result = supabase.table("messages")\
+                .update(update_data)\
+                .eq("id", message_id)\
+                .execute()
+            
+            print(f"✅ Updated message {message_id} with blockchain/IPFS data: {update_data}")
+            return True
+        except Exception as e:
+            print(f"❌ Failed to update message blockchain data: {e}")
+            return False
+    
+    @staticmethod
     async def get_room_messages(room_id: str, limit: int = 50, offset: int = 0) -> List[Dict[str, Any]]:
         """Get messages from room with Redis caching for lightning speed"""
         cache_key = f"messages:{room_id}:{limit}:{offset}"
