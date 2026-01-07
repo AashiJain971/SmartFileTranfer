@@ -1056,11 +1056,30 @@ async def complete_chat_file_upload(
                     
                     # ✅ UPDATE MESSAGE WITH IPFS CID (for background uploads)
                     if msg_id:
-                        await ChatCRUD.update_message_blockchain_data(
+                        updated = await ChatCRUD.update_message_blockchain_data(
                             message_id=msg_id,
                             ipfs_cid=ipfs_result.get('cid')
                         )
-                        print(f"✅ Updated message {msg_id} with IPFS CID")
+                        if updated:
+                            print(f"✅ Updated message {msg_id} with IPFS CID")
+                            
+                            # 🔔 NOTIFY CLIENTS via WebSocket that IPFS is ready
+                            try:
+                                from routers.websocket import broadcast_to_room
+                                await broadcast_to_room(
+                                    room_id,
+                                    {
+                                        'type': 'message_updated',
+                                        'message_id': msg_id,
+                                        'ipfs_cid': ipfs_result.get('cid'),
+                                        'update_type': 'ipfs_complete'
+                                    }
+                                )
+                                print(f"📢 Notified clients about IPFS completion")
+                            except Exception as ws_err:
+                                print(f"⚠️ WebSocket notification failed: {ws_err}")
+                        else:
+                            print(f"❌ Failed to update message {msg_id} with IPFS CID")
                 else:
                     print(f"⚠️ IPFS upload failed: {ipfs_result.get('error', 'Not configured')}")
                 
@@ -1089,12 +1108,29 @@ async def complete_chat_file_upload(
                     
                     # ✅ UPDATE MESSAGE WITH BLOCKCHAIN DATA (for background uploads)
                     if msg_id:
-                        await ChatCRUD.update_message_blockchain_data(
+                        updated = await ChatCRUD.update_message_blockchain_data(
                             message_id=msg_id,
                             blockchain_tx_hash=blockchain_result.get('transaction_hash'),
                             blockchain_block_number=blockchain_result.get('block_number')
                         )
-                        print(f"✅ Updated message {msg_id} with blockchain data")
+                        if updated:
+                            print(f"✅ Updated message {msg_id} with blockchain data")
+                            
+                            # 🔔 NOTIFY CLIENTS via WebSocket
+                            try:
+                                from routers.websocket import broadcast_to_room
+                                await broadcast_to_room(
+                                    room_id,
+                                    {
+                                        'type': 'message_updated',
+                                        'message_id': msg_id,
+                                        'blockchain_tx_hash': blockchain_result.get('transaction_hash'),
+                                        'update_type': 'blockchain_complete'
+                                    }
+                                )
+                                print(f"📢 Notified clients about blockchain completion")
+                            except Exception as ws_err:
+                                print(f"⚠️ WebSocket notification failed: {ws_err}")
                     
                     # Generate proof certificate
                     try:
@@ -1558,31 +1594,71 @@ async def search_room_messages(
 async def get_blockchain_transaction(tx_hash: str):
     """Get blockchain transaction details (public endpoint - no auth required)
     Accepts both tx_hash and file_hash for backward compatibility
+    Also attempts to sync IPFS data from blockchain_records if missing
     """
+    print(f"\n🚨 ENDPOINT HIT: /api/blockchain/transaction/{tx_hash[:20]}...")
     try:
         blockchain_service = get_blockchain_service()
         
-        # Try to get by tx_hash first
-        transaction = await blockchain_service.get_transaction(tx_hash)
+        print(f"🔍 GET BLOCKCHAIN TRANSACTION: {tx_hash[:40]}...")
+        print(f"   Blockchain service enabled: {blockchain_service.enabled}")
         
-        # If not found and looks like a file_hash (64 chars), try searching by file_hash
-        if not transaction and len(tx_hash) == 64:
-            print(f"🔍 Transaction not found by tx_hash, trying file_hash: {tx_hash[:16]}...")
+        transaction = None
+        
+        # Normalize the hash - remove 0x prefix if present for file_hash checks
+        normalized_hash = tx_hash[2:] if tx_hash.startswith('0x') else tx_hash
+        
+        # Strategy 1: Try as tx_hash first (blockchain_records.tx_hash field)
+        print(f"   🔍 Trying tx_hash lookup: {tx_hash[:20]}...")
+        transaction = await blockchain_service.get_transaction(tx_hash)
+        print(f"   TX hash result: {'Found' if transaction else 'Not found'}")
+        
+        # Strategy 2: If not found, try as file_hash (could be with or without 0x prefix)
+        if not transaction and len(normalized_hash) == 64:
+            print(f"   🔍 Trying file_hash lookup: {normalized_hash[:16]}...")
             try:
                 result = blockchain_service.supabase.table("blockchain_records")\
                     .select("*")\
-                    .eq("file_hash", tx_hash)\
+                    .eq("file_hash", normalized_hash)\
                     .execute()
+                
+                print(f"   File hash query result: {len(result.data) if result.data else 0} records")
                 
                 if result.data and len(result.data) > 0:
                     transaction = result.data[0]
-                    print(f"✅ Found transaction by file_hash: {transaction.get('tx_hash')}")
-            except Exception as fallback_error:
-                print(f"⚠️ Fallback lookup failed: {fallback_error}")
+                    print(f"   ✅ Found transaction by file_hash!")
+                    print(f"   TX Hash: {transaction.get('tx_hash')}")
+                    print(f"   IPFS CID: {transaction.get('ipfs_cid')}")
+            except Exception as file_hash_error:
+                print(f"   ⚠️ File hash lookup failed: {file_hash_error}")
         
+        # ⚡ AUTO-SYNC: Try to update message with IPFS from blockchain if we found the transaction
+        if transaction:
+            try:
+                # Find message with this file_hash to sync IPFS
+                msg_result = blockchain_service.supabase.table("messages")\
+                    .select("id, ipfs_cid, file_hash")\
+                    .eq("file_hash", transaction.get('file_hash'))\
+                    .execute()
+                
+                if msg_result.data and len(msg_result.data) > 0:
+                    message = msg_result.data[0]
+                    message_id = message['id']
+                    
+                    print(f"   Found message: {message_id}")
+                    print(f"   Message IPFS: {message.get('ipfs_cid')}")
+                    
+                    # If message is missing IPFS but blockchain has it
+                    if not message.get('ipfs_cid') and transaction.get('ipfs_cid'):
+                        print(f"   🔄 Auto-syncing IPFS to message {message_id}...")
+                        await ChatCRUD.sync_message_ipfs_from_blockchain(message_id)
+            except Exception as sync_err:
+                print(f"   ⚠️ Auto-sync failed (non-critical): {sync_err}")
+        
+        # If still not found, return 404
         if not transaction:
-            print(f"❌ Transaction not found: {tx_hash[:16]}...")
-            raise HTTPException(status_code=404, detail="Transaction not found")
+            print(f"   ❌ Transaction not found for: {tx_hash}")
+            raise HTTPException(status_code=404, detail=f"Transaction not found for hash: {tx_hash}")
         
         return transaction
         

@@ -7290,29 +7290,35 @@
             modalOverlay.appendChild(loadingModal);
             document.body.appendChild(modalOverlay);
             
-            // Fetch verification details in background (with timeout)
+            // Fetch verification details in background (ALWAYS fetch from database, no timeout)
             let blockchainData = null;
             if (message.file_hash) {
                 try {
-                    const response = await Promise.race([
-                        authenticatedFetch(
-                            `${API_CONFIG.baseUrl}/api/blockchain/transaction/${message.blockchain_tx_hash || message.file_hash}`
-                        ),
-                        new Promise((_, reject) => setTimeout(() => reject(new Error('Timeout')), 2000))
-                    ]);
+                    // ✅ ALWAYS use file_hash to query blockchain_records table
+                    // This ensures we get fresh IPFS data from database every time
+                    // NOTE: Route is /chat/api/blockchain/transaction because of router prefix
+                    console.log(`🔍 Fetching blockchain data for file_hash: ${message.file_hash.substring(0, 20)}...`);
+                    const response = await authenticatedFetch(
+                        `${API_CONFIG.baseUrl}/chat/api/blockchain/transaction/${message.file_hash}`
+                    );
+                    
                     if (response.ok) {
                         blockchainData = await response.json();
+                        console.log('✅ Blockchain data fetched from database:', blockchainData);
+                    } else {
+                        const errorText = await response.text();
+                        console.error('❌ Failed to fetch blockchain data:', response.status, errorText);
+                        throw new Error(`HTTP ${response.status}: ${errorText}`);
                     }
                 } catch (error) {
-                    console.log('Could not fetch blockchain data (using mock):', error);
-                    // Use mock data if fetch fails or times out
-                    // NOTE: Check if message actually has IPFS CID from real upload
+                    console.error('❌ Could not fetch blockchain data:', error);
+                    // Use mock data if fetch fails
                     const hasMockCID = message.ipfs_cid && message.ipfs_cid.startsWith('Qmdc9c');
                     
                     blockchainData = {
                         tx_hash: message.blockchain_tx_hash || '0x' + message.file_hash?.substring(0, 40),
                         block_number: Math.floor(Math.random() * 1000000) + 6000000,
-                        network: 'Simulated Blockchain',
+                        network: 'Simulated Blockchain (Database Unavailable)',
                         gas_used: Math.floor(Math.random() * 50000) + 100000,
                         timestamp: new Date().toISOString(),
                         ipfs_cid: hasMockCID ? null : (message.ipfs_cid || null),
@@ -7492,8 +7498,8 @@
                         </div>
                     ` : ''}
                     
-                    <!-- IPFS Decentralized Storage -->
-                    ${blockchainData?.ipfs_cid || message.ipfs_cid ? `
+                    <!-- IPFS Decentralized Storage (ALWAYS show if we have IPFS CID from blockchain data) -->
+                    ${blockchainData?.ipfs_cid ? `
                         <div style="margin-bottom: 25px;">
                             <div style="display: flex; align-items: center; gap: 10px; margin-bottom: 12px;">
                                 <div style="width: 8px; height: 32px; background: #f59e0b; border-radius: 4px;"></div>
@@ -7513,7 +7519,7 @@
                                     <div style="font-family: 'Courier New', monospace; font-size: 12px; word-break: break-all; 
                                                 color: #b45309; line-height: 1.6; padding: 10px; background: rgba(251, 191, 36, 0.1); 
                                                 border-radius: 6px;">
-                                        ${blockchainData?.ipfs_cid || message.ipfs_cid}
+                                        ${blockchainData.ipfs_cid}
                                     </div>
                                 </div>
                                 
@@ -7526,7 +7532,7 @@
                                         <span>📄 Live File Preview (via IPFS)</span>
                                         <span style="font-size: 11px; opacity: 0.9;">Real-time from Pinata</span>
                                     </div>
-                                    <iframe src="https://gateway.pinata.cloud/ipfs/${blockchainData?.ipfs_cid || message.ipfs_cid}" 
+                                    <iframe src="https://gateway.pinata.cloud/ipfs/${blockchainData.ipfs_cid}" 
                                             style="width: 100%; height: 300px; border: none; display: block;">
                                     </iframe>
                                 </div>
@@ -7536,7 +7542,7 @@
                                         🔗 Alternative IPFS Gateways (verify credibility):
                                     </div>
                                     <div style="display: flex; flex-direction: column; gap: 8px;">
-                                        <a href="https://ipfs.io/ipfs/${blockchainData?.ipfs_cid || message.ipfs_cid}" 
+                                        <a href="https://ipfs.io/ipfs/${blockchainData.ipfs_cid}" 
                                            target="_blank"
                                            style="display: flex; align-items: center; gap: 8px; padding: 10px 15px; 
                                                   background: linear-gradient(135deg, #0891b2 0%, #0e7490 100%);
@@ -7547,7 +7553,7 @@
                                             <div style="flex: 1;">
                                                 <div>IPFS.io Public Gateway</div>
                                                 <div style="font-size: 10px; opacity: 0.8; font-weight: 400;">
-                                                    https://ipfs.io/ipfs/${(blockchainData?.ipfs_cid || message.ipfs_cid).substring(0, 20)}...
+                                                    https://ipfs.io/ipfs/${blockchainData.ipfs_cid.substring(0, 20)}...
                                                 </div>
                                             </div>
                                             <span>→</span>

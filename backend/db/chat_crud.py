@@ -423,6 +423,19 @@ class ChatCRUD:
                 # Mark as sent for sender
                 await ChatCRUD.mark_message_status(message["id"], sender_id, MessageStatus.SENT.value)
                 
+                # ✅ INVALIDATE CACHE - Critical for new messages to appear!
+                try:
+                    print(f"🔄 Invalidating message cache for room {room_id}...")
+                    patterns = [
+                        f"messages:{room_id}:*",
+                        f"room:{room_id}:*"
+                    ]
+                    for pattern in patterns:
+                        deleted = await cache.delete_pattern(pattern)
+                        print(f"   Deleted cache pattern: {pattern} ({deleted} keys)")
+                except Exception as cache_err:
+                    print(f"⚠️ Cache invalidation failed: {cache_err}")
+                
                 return message
             raise Exception("Failed to send file message")
         except Exception as e:
@@ -449,17 +462,122 @@ class ChatCRUD:
                 update_data["certificate_url"] = certificate_url
             
             if not update_data:
+                print(f"⚠️ No data to update for message {message_id}")
                 return False
             
+            print(f"📝 Updating message {message_id} with: {update_data}")
+            
+            # First, verify message exists
+            check_result = supabase.table("messages")\
+                .select("id, room_id, ipfs_cid, blockchain_tx_hash")\
+                .eq("id", message_id)\
+                .execute()
+            
+            if not check_result.data or len(check_result.data) == 0:
+                print(f"❌ Message {message_id} not found in database!")
+                return False
+            
+            old_data = check_result.data[0]
+            room_id = old_data.get('room_id')
+            print(f"✅ Message exists in room {room_id}")
+            print(f"   Current IPFS: {old_data.get('ipfs_cid', 'None')}")
+            print(f"   Current Blockchain: {old_data.get('blockchain_tx_hash', 'None')}")
+            
+            # Perform update
             result = supabase.table("messages")\
                 .update(update_data)\
                 .eq("id", message_id)\
                 .execute()
             
-            print(f"✅ Updated message {message_id} with blockchain/IPFS data: {update_data}")
+            if not result.data or len(result.data) == 0:
+                print(f"❌ Update returned no data for message {message_id}")
+                print(f"   Result: {result}")
+                return False
+            
+            # Verify the update actually worked
+            verify_result = supabase.table("messages")\
+                .select("ipfs_cid, blockchain_tx_hash, blockchain_block_number")\
+                .eq("id", message_id)\
+                .execute()
+            
+            if verify_result.data and len(verify_result.data) > 0:
+                verified = verify_result.data[0]
+                print(f"✅ Database update VERIFIED for message {message_id}")
+                print(f"   New IPFS CID: {verified.get('ipfs_cid', 'None')}")
+                print(f"   New Blockchain TX: {verified.get('blockchain_tx_hash', 'None')}")
+            else:
+                print(f"❌ Could not verify update for message {message_id}")
+            
+            # ✅ INVALIDATE CACHE - Critical for showing updates!
+            if room_id:
+                print(f"🔄 Invalidating cache for room {room_id}...")
+                
+                from services.cache_service import cache
+                
+                # Delete ALL message cache keys for this room
+                patterns = [
+                    f"messages:{room_id}:*",
+                    f"room:{room_id}:*"
+                ]
+                
+                for pattern in patterns:
+                    deleted = await cache.delete_pattern(pattern)
+                    print(f"   Deleted cache pattern: {pattern} ({deleted} keys)")
+                
+                print(f"✅ Cache invalidated for room {room_id}")
+            
             return True
         except Exception as e:
             print(f"❌ Failed to update message blockchain data: {e}")
+            import traceback
+            traceback.print_exc()
+            return False
+    
+    @staticmethod
+    async def sync_message_ipfs_from_blockchain(message_id: str) -> bool:
+        """Sync IPFS CID from blockchain_records to message if missing"""
+        try:
+            # Get message
+            msg_result = supabase.table("messages")\
+                .select("id, file_hash, ipfs_cid, blockchain_tx_hash")\
+                .eq("id", message_id)\
+                .execute()
+            
+            if not msg_result.data:
+                return False
+            
+            message = msg_result.data[0]
+            
+            # If message already has IPFS, no need to sync
+            if message.get('ipfs_cid'):
+                print(f"✅ Message {message_id} already has IPFS: {message.get('ipfs_cid')}")
+                return True
+            
+            # Try to find blockchain record by file_hash or tx_hash
+            file_hash = message.get('file_hash')
+            tx_hash = message.get('blockchain_tx_hash')
+            
+            if file_hash:
+                bc_result = supabase.table("blockchain_records")\
+                    .select("ipfs_cid, tx_hash")\
+                    .eq("file_hash", file_hash)\
+                    .execute()
+                
+                if bc_result.data and len(bc_result.data) > 0:
+                    bc_data = bc_result.data[0]
+                    ipfs_cid = bc_data.get('ipfs_cid')
+                    
+                    if ipfs_cid:
+                        print(f"🔄 Syncing IPFS from blockchain_records to message {message_id}")
+                        return await ChatCRUD.update_message_blockchain_data(
+                            message_id=message_id,
+                            ipfs_cid=ipfs_cid,
+                            blockchain_tx_hash=bc_data.get('tx_hash')
+                        )
+            
+            return False
+        except Exception as e:
+            print(f"❌ Failed to sync IPFS from blockchain: {e}")
             return False
     
     @staticmethod

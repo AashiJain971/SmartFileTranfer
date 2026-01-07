@@ -192,20 +192,27 @@ class BlockchainService:
     async def get_transaction(self, tx_hash: str) -> Optional[Dict[str, Any]]:
         """Get transaction by hash"""
         if not self.enabled:
+            print(f"⚠️ Blockchain service not enabled")
             return None
         
         try:
+            print(f"🔍 Looking up blockchain transaction: {tx_hash[:16]}...")
             result = self.supabase.table("blockchain_records")\
                 .select("*")\
                 .eq("tx_hash", tx_hash)\
                 .execute()
             
             if result.data and len(result.data) > 0:
+                print(f"✅ Found transaction: {result.data[0].get('tx_hash')}")
                 return result.data[0]
+            
+            print(f"❌ Transaction not found by tx_hash: {tx_hash[:16]}...")
             return None
             
         except Exception as e:
             print(f"❌ Failed to get transaction: {e}")
+            import traceback
+            traceback.print_exc()
             return None
     
     async def verify_transfer(self, file_hash: str) -> bool:
