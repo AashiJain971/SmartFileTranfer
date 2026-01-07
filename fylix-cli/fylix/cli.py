@@ -141,14 +141,14 @@ def inbox():
                 room_id = room["id"]
                 
                 try:
-                    # Get recent messages (with timeout handling)
+                    # Get recent messages (with timeout handling) - limit to 50 for faster response
                     console.print(f"[dim]Checking room: {room.get('name', room_id[:8])}...[/dim]")
-                    messages_response = await api_client.get_room_messages(room_id, limit=100)
+                    messages_response = await api_client.get_room_messages(room_id, limit=50)
                     messages = messages_response.get("messages", [])
                     console.print(f"[dim]Found {len(messages)} messages in this room[/dim]")
                 except Exception as e:
-                    # Skip rooms that timeout or error
-                    console.print(f"[yellow]⚠ Skipping room {room.get('name', room_id[:8])}: {type(e).__name__}[/yellow]")
+                    # Skip rooms that timeout or error - show actual error for debugging
+                    console.print(f"[yellow]⚠ Skipping room {room.get('name', room_id[:8])}: {type(e).__name__} - {str(e)[:100]}[/yellow]")
                     continue
                 
                 # Filter file messages (type can be "file" or "image")
@@ -262,12 +262,12 @@ def outbox():
                         break
                 
                 try:
-                    # Get recent messages (with timeout handling)
-                    messages_response = await api_client.get_room_messages(room_id, limit=100)
+                    # Get recent messages (limit to 20 for faster response in outbox)
+                    messages_response = await api_client.get_room_messages(room_id, limit=20)
                     messages = messages_response.get("messages", [])
                 except Exception as e:
                     # Skip rooms that timeout or error
-                    console.print(f"[dim]Skipping room {room_name}: timeout[/dim]")
+                    console.print(f"[yellow]⚠ Skipping room {room_name}: {type(e).__name__}[/yellow]")
                     continue
                 
                 # Filter file messages sent by current user (type can be "file" or "image")
@@ -371,7 +371,12 @@ def send(
             console.print(f"\n[dim]Transfer ID: {transfer_id}[/dim]")
         
         except Exception as e:
-            console.print(f"\n[red]✗ Send failed: {e}[/red]")
+            error_msg = str(e)
+            if "401" in error_msg or "Unauthorized" in error_msg:
+                console.print(f"[red]✗ Authentication failed. Your session expired.[/red]")
+                console.print(f"[yellow]Please login again: fylix login {config.get_credentials().get('email', '<email>')}[/yellow]")
+            else:
+                console.print(f"[red]✗ Send failed: {e}[/red]")
             raise typer.Exit(1)
         
         finally:
@@ -417,7 +422,7 @@ def receive(
             
             for room in rooms:
                 try:
-                    messages_response = await api_client.get_room_messages(room["id"], limit=100)
+                    messages_response = await api_client.get_room_messages(room["id"], limit=50)
                     for msg in messages_response.get("messages", []):
                         # Only consider file/image messages from others (not self-sent)
                         if msg["message_type"] in ["file", "image"] and msg.get("file_name") and msg["sender_id"] != current_user_id:
