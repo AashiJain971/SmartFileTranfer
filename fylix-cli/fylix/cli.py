@@ -114,22 +114,37 @@ def whoami():
 # ==================== INBOX ====================
 
 @app.command()
-def inbox():
+def inbox(range: str = typer.Argument("1-10", help="Message range (e.g., 1-10, max 10)")):
     """
-    List incoming file transfers (not auto-downloaded)
+    List incoming file transfers (loads 10 messages at a time)
     
-    Shows sender, filename, size, and integrity status
-    User must explicitly run 'fylix receive' to download
-    
-    Example: fylix inbox
+    Examples:
+        fylix inbox          # Load messages 1-10
+        fylix inbox 1-10     # Load messages 1-10
+        fylix inbox 11-20    # Load next 10 messages
     """
-    async def _inbox():
+    async def _inbox(range_str: str):
         if not config.is_logged_in():
             console.print("[red]✗ Not logged in. Run 'fylix login <email>' first[/red]")
             raise typer.Exit(1)
         
+        # Parse range
         try:
-            console.print("\n[cyan]📬 Fetching inbox...[/cyan]")
+            start, end = map(int, range_str.split('-'))
+            if start < 1 or end < start:
+                console.print("[red]Invalid range. Use format: 1-10[/red]")
+                return
+            if end - start + 1 > 10:
+                console.print("[red]Maximum 10 messages can be loaded at once.[/red]")
+                console.print("[yellow]To see first 10: fylix inbox 1-10[/yellow]")
+                console.print("[yellow]To see next 10: fylix inbox 11-20[/yellow]")
+                return
+        except ValueError:
+            console.print("[red]Invalid range format. Use: fylix inbox 1-10[/red]")
+            return
+        
+        try:
+            console.print(f"\n[cyan]📬 Fetching inbox (messages {start}-{end})...[/cyan]")
             
             # Get all user rooms
             rooms_response = await api_client.get_user_rooms()
@@ -143,11 +158,11 @@ def inbox():
                 room_name = room.get("name", room_id[:8])
                 
                 try:
-                    # Get recent messages - increased to 100 for reliability
+                    # Get messages (limit 200 to allow pagination without too much load)
                     console.print(f"[dim]Checking {room_name}...[/dim]")
-                    messages_response = await api_client.get_room_messages(room_id, limit=100)
+                    messages_response = await api_client.get_room_messages(room_id, limit=200)
                     messages = messages_response.get("messages", [])
-                    console.print(f"[dim]Found {len(messages)} messages[/dim]")
+                    console.print(f"[dim]Found {len(messages)} total messages in room[/dim]")
                 except Exception as e:
                     # Show detailed error for debugging
                     import traceback
@@ -176,16 +191,34 @@ def inbox():
                 console.print("\n[yellow]📭 No incoming files[/yellow]")
                 return
             
+            # Sort by timestamp (newest first)
+            incoming_files.sort(key=lambda x: x["created_at"], reverse=True)
+            
+            # Total count
+            total_messages = len(incoming_files)
+            
+            # Check if requested range is valid
+            if start > total_messages:
+                console.print(f"[red]No messages found in range {start}-{end}[/red]")
+                console.print(f"[yellow]Total messages in inbox: {total_messages}[/yellow]")
+                console.print(f"[yellow]Use: fylix inbox 1-10 to see the first 10 messages[/yellow]")
+                return
+            
+            # Slice for requested range (adjust end if it exceeds total)
+            actual_end = min(end, total_messages)
+            paginated_files = incoming_files[start-1:actual_end]
+            
             # Display table
-            table = Table(title=f"Inbox ({len(incoming_files)} files)")
+            table = Table(title=f"Inbox (Showing {start}-{actual_end} of {total_messages} total)")
             table.add_column("Sender", style="cyan")
             table.add_column("Filename", style="white")
             table.add_column("Size", style="green")
             table.add_column("Time", style="magenta")
             table.add_column("Status", style="yellow")
             table.add_column("ID (7 chars)", style="bright_blue")  # Make it easier to copy
+            table.add_column("#", style="dim")  # Message number
             
-            for file in incoming_files:
+            for idx, file in enumerate(paginated_files, start=start):
                 size_str = _format_size(file["size"])
                 
                 # Format timestamp in local timezone (like websocket_test.html)
@@ -219,13 +252,22 @@ def inbox():
                     size_str,
                     time_str,
                     status,
-                    msg_id_short
+                    msg_id_short,
+                    str(idx)
                 )
             
             console.print(table)
+            
+            # Show pagination info
+            if actual_end < total_messages:
+                next_start = actual_end + 1
+                next_end = min(actual_end + 10, total_messages)
+                console.print(f"\n[yellow]📄 More messages available. Use: fylix inbox {next_start}-{next_end}[/yellow]")
+            
             console.print(f"\n[cyan]To download:[/cyan] fylix receive <ID>")
             console.print(f"[cyan]To verify:[/cyan] fylix verify <ID>")
-            console.print(f"[dim]Example: fylix receive {incoming_files[0]['message_id'][:7]} or fylix verify {incoming_files[0]['message_id'][:7]}[/dim]")
+            if paginated_files:
+                console.print(f"[dim]Example: fylix receive {paginated_files[0]['message_id'][:7]} or fylix verify {paginated_files[0]['message_id'][:7]}[/dim]")
         
         except Exception as e:
             import traceback
@@ -236,27 +278,43 @@ def inbox():
         finally:
             await api_client.close()
     
-    asyncio.run(_inbox())
+    asyncio.run(_inbox(range))
 
 
 # ==================== OUTBOX ====================
 
 @app.command()
-def outbox():
+def outbox(range: str = typer.Argument("1-10", help="Message range (e.g., 1-10, max 10)")):
     """
-    List files you've sent to others
+    List files you've sent to others (loads 10 messages at a time)
     
-    Shows recipient, filename, size, timestamp, and delivery status
-    
-    Example: fylix outbox
+    Examples:
+        fylix outbox          # Load messages 1-10
+        fylix outbox 1-10     # Load messages 1-10
+        fylix outbox 11-20    # Load next 10 messages
     """
-    async def _outbox():
+    async def _outbox(range_str: str):
         if not config.is_logged_in():
             console.print("[red]✗ Not logged in. Run 'fylix login <email>' first[/red]")
             raise typer.Exit(1)
         
+        # Parse range
         try:
-            console.print("\n[cyan]📤 Fetching sent files...[/cyan]")
+            start, end = map(int, range_str.split('-'))
+            if start < 1 or end < start:
+                console.print("[red]Invalid range. Use format: 1-10[/red]")
+                return
+            if end - start + 1 > 10:
+                console.print("[red]Maximum 10 messages can be loaded at once.[/red]")
+                console.print("[yellow]To see first 10: fylix outbox 1-10[/yellow]")
+                console.print("[yellow]To see next 10: fylix outbox 11-20[/yellow]")
+                return
+        except ValueError:
+            console.print("[red]Invalid range format. Use: fylix outbox 1-10[/red]")
+            return
+        
+        try:
+            console.print(f"\n[cyan]📤 Fetching outbox (messages {start}-{end})...[/cyan]")
             
             # Get all user rooms
             rooms_response = await api_client.get_user_rooms()
@@ -279,8 +337,8 @@ def outbox():
                         break
                 
                 try:
-                    # Get recent messages (limit to 10 for instant response like websocket_test.html)
-                    messages_response = await api_client.get_room_messages(room_id, limit=10)
+                    # Get messages (limit 200 to allow pagination)
+                    messages_response = await api_client.get_room_messages(room_id, limit=200)
                     messages = messages_response.get("messages", [])
                 except Exception as e:
                     # Skip rooms that timeout silently
@@ -307,16 +365,31 @@ def outbox():
             # Sort by timestamp (newest first)
             sent_files.sort(key=lambda x: x["created_at"], reverse=True)
             
+            # Total count
+            total_messages = len(sent_files)
+            
+            # Check if requested range is valid
+            if start > total_messages:
+                console.print(f"[red]No messages found in range {start}-{end}[/red]")
+                console.print(f"[yellow]Total messages in outbox: {total_messages}[/yellow]")
+                console.print(f"[yellow]Use: fylix outbox 1-10 to see the first 10 messages[/yellow]")
+                return
+            
+            # Slice for requested range
+            actual_end = min(end, total_messages)
+            paginated_files = sent_files[start-1:actual_end]
+            
             # Display table
-            table = Table(title=f"Outbox ({len(sent_files)} files)")
+            table = Table(title=f"Outbox (Showing {start}-{actual_end} of {total_messages} total)")
             table.add_column("Recipient", style="cyan")
             table.add_column("Filename", style="white")
             table.add_column("Size", style="green")
             table.add_column("Time", style="magenta")
             table.add_column("Status", style="yellow")
             table.add_column("Message ID", style="dim")
+            table.add_column("#", style="bright_blue")  # Message number
             
-            for file in sent_files:
+            for idx, file in enumerate(paginated_files, start=start):
                 size_str = _format_size(file["size"])
                 
                 # Format timestamp
@@ -339,11 +412,22 @@ def outbox():
                     size_str,
                     time_str,
                     status,
-                    msg_id_short
+                    msg_id_short,
+                    str(idx)
                 )
             
             console.print(table)
-            console.print(f"\n[dim]Files are available for recipient to download[/dim]")
+            
+            # Show pagination info
+            if actual_end < total_messages:
+                next_start = actual_end + 1
+                next_end = min(actual_end + 10, total_messages)
+                console.print(f"\n[yellow]📄 More messages available. Use: fylix outbox {next_start}-{next_end}[/yellow]")
+            
+            console.print(f"\n[cyan]To verify:[/cyan] fylix verify <ID>")
+            if paginated_files:
+                console.print(f"[dim]Example: fylix verify {paginated_files[0]['message_id'][:7]}[/dim]")
+            console.print(f"[dim]Files are available for recipient to download[/dim]")
         
         except Exception as e:
             import traceback
@@ -354,7 +438,7 @@ def outbox():
         finally:
             await api_client.close()
     
-    asyncio.run(_outbox())
+    asyncio.run(_outbox(range))
 
 
 # ==================== SEND ====================
