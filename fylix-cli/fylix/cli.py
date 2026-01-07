@@ -140,13 +140,20 @@ def inbox():
             for room in rooms:
                 room_id = room["id"]
                 
-                # Get recent messages
-                messages_response = await api_client.get_room_messages(room_id, limit=100)
-                messages = messages_response.get("messages", [])
+                try:
+                    # Get recent messages (with timeout handling)
+                    console.print(f"[dim]Checking room: {room.get('name', room_id[:8])}...[/dim]")
+                    messages_response = await api_client.get_room_messages(room_id, limit=100)
+                    messages = messages_response.get("messages", [])
+                    console.print(f"[dim]Found {len(messages)} messages in this room[/dim]")
+                except Exception as e:
+                    # Skip rooms that timeout or error
+                    console.print(f"[yellow]⚠ Skipping room {room.get('name', room_id[:8])}: {type(e).__name__}[/yellow]")
+                    continue
                 
-                # Filter file messages
+                # Filter file messages (type can be "file" or "image")
                 for msg in messages:
-                    if msg["message_type"] == "file":
+                    if msg["message_type"] in ["file", "image"] and msg.get("file_name"):
                         # Only show files from other users (not self-sent)
                         if msg["sender_id"] != config.get_user_id():
                             incoming_files.append({
@@ -171,7 +178,7 @@ def inbox():
             table.add_column("Size", style="green")
             table.add_column("Time", style="magenta")
             table.add_column("Status", style="yellow")
-            table.add_column("Message ID", style="dim")
+            table.add_column("ID (7 chars)", style="bright_blue")  # Make it easier to copy
             
             for file in incoming_files:
                 size_str = _format_size(file["size"])
@@ -187,8 +194,8 @@ def inbox():
                 # Determine integrity status
                 status = "✓ Verified" if file.get("blockchain_tx") else "⚠ Pending"
                 
-                # Truncate message ID for display (first 7 chars for easy copying)
-                msg_id_short = file["message_id"][:7] + "…"
+                # Show first 7 chars (no ellipsis - easier to copy)
+                msg_id_short = file["message_id"][:7]
                 
                 table.add_row(
                     file["sender"],
@@ -200,16 +207,138 @@ def inbox():
                 )
             
             console.print(table)
-            console.print(f"\n[dim]Use 'fylix receive <message_id>' to download a file[/dim]")
+            console.print(f"\n[cyan]To download:[/cyan] fylix receive <ID>")
+            console.print(f"[dim]Example: fylix receive {incoming_files[0]['message_id'][:7]}[/dim]")
         
         except Exception as e:
+            import traceback
             console.print(f"[red]✗ Failed to fetch inbox: {e}[/red]")
+            console.print(f"[dim]{traceback.format_exc()}[/dim]")
             raise typer.Exit(1)
         
         finally:
             await api_client.close()
     
     asyncio.run(_inbox())
+
+
+# ==================== OUTBOX ====================
+
+@app.command()
+def outbox():
+    """
+    List files you've sent to others
+    
+    Shows recipient, filename, size, timestamp, and delivery status
+    
+    Example: fylix outbox
+    """
+    async def _outbox():
+        if not config.is_logged_in():
+            console.print("[red]✗ Not logged in. Run 'fylix login <email>' first[/red]")
+            raise typer.Exit(1)
+        
+        try:
+            console.print("\n[cyan]📤 Fetching sent files...[/cyan]")
+            
+            # Get all user rooms
+            rooms_response = await api_client.get_user_rooms()
+            rooms = rooms_response.get("rooms", [])
+            
+            # Collect all file messages sent by current user
+            sent_files = []
+            current_user_id = config.get_user_id()
+            
+            for room in rooms:
+                room_id = room["id"]
+                room_name = room.get("name", "Unknown")
+                
+                # Get other member (recipient)
+                members = room.get("members", [])
+                recipient = "Unknown"
+                for member in members:
+                    if member["user_id"] != current_user_id:
+                        recipient = member["username"]
+                        break
+                
+                try:
+                    # Get recent messages (with timeout handling)
+                    messages_response = await api_client.get_room_messages(room_id, limit=100)
+                    messages = messages_response.get("messages", [])
+                except Exception as e:
+                    # Skip rooms that timeout or error
+                    console.print(f"[dim]Skipping room {room_name}: timeout[/dim]")
+                    continue
+                
+                # Filter file messages sent by current user (type can be "file" or "image")
+                for msg in messages:
+                    if msg["message_type"] in ["file", "image"] and msg.get("file_name") and msg["sender_id"] == current_user_id:
+                        sent_files.append({
+                            "message_id": msg["id"],
+                            "recipient": recipient,
+                            "filename": msg.get("file_name", "Unknown"),
+                            "size": msg.get("file_size", 0),
+                            "file_hash": msg.get("file_hash"),
+                            "ipfs_cid": msg.get("ipfs_cid"),
+                            "blockchain_tx": msg.get("blockchain_tx_hash"),
+                            "created_at": msg["created_at"]
+                        })
+            
+            if not sent_files:
+                console.print("\n[yellow]📭 No sent files[/yellow]")
+                return
+            
+            # Sort by timestamp (newest first)
+            sent_files.sort(key=lambda x: x["created_at"], reverse=True)
+            
+            # Display table
+            table = Table(title=f"Outbox ({len(sent_files)} files)")
+            table.add_column("Recipient", style="cyan")
+            table.add_column("Filename", style="white")
+            table.add_column("Size", style="green")
+            table.add_column("Time", style="magenta")
+            table.add_column("Status", style="yellow")
+            table.add_column("Message ID", style="dim")
+            
+            for file in sent_files:
+                size_str = _format_size(file["size"])
+                
+                # Format timestamp
+                from datetime import datetime
+                try:
+                    dt = datetime.fromisoformat(file["created_at"].replace('Z', '+00:00'))
+                    time_str = dt.strftime("%b %d, %I:%M%p")
+                except:
+                    time_str = "Unknown"
+                
+                # Determine delivery status
+                status = "✓ Delivered" if file.get("blockchain_tx") else "⚠ Pending"
+                
+                # Truncate message ID for display
+                msg_id_short = file["message_id"][:7] + "…"
+                
+                table.add_row(
+                    file["recipient"],
+                    file["filename"],
+                    size_str,
+                    time_str,
+                    status,
+                    msg_id_short
+                )
+            
+            console.print(table)
+            console.print(f"\n[dim]Files are available for recipient to download[/dim]")
+        
+        except Exception as e:
+            import traceback
+            console.print(f"[red]✗ Failed to fetch outbox: {e}[/red]")
+            console.print(f"[dim]{traceback.format_exc()}[/dim]")
+            raise typer.Exit(1)
+        
+        finally:
+            await api_client.close()
+    
+    asyncio.run(_outbox())
 
 
 # ==================== SEND ====================
@@ -287,14 +416,20 @@ def receive(
             current_user_id = config.get_user_id()
             
             for room in rooms:
-                messages_response = await api_client.get_room_messages(room["id"], limit=100)
-                for msg in messages_response.get("messages", []):
-                    # Only consider file messages from others (not self-sent)
-                    if msg["message_type"] == "file" and msg["sender_id"] != current_user_id:
-                        # Support full or partial message ID match
-                        if msg["id"] == message_id or msg["id"].startswith(message_id):
-                            file_info = msg
-                            break
+                try:
+                    messages_response = await api_client.get_room_messages(room["id"], limit=100)
+                    for msg in messages_response.get("messages", []):
+                        # Only consider file/image messages from others (not self-sent)
+                        if msg["message_type"] in ["file", "image"] and msg.get("file_name") and msg["sender_id"] != current_user_id:
+                            # Support full or partial message ID match
+                            if msg["id"] == message_id or msg["id"].startswith(message_id):
+                                file_info = msg
+                                break
+                except Exception as e:
+                    # Skip rooms that timeout - continue searching
+                    console.print(f"[dim]Searching (skipping slow room)...[/dim]")
+                    continue
+                    
                 if file_info:
                     break
             
@@ -308,6 +443,8 @@ def receive(
             console.print(f"Filename: {file_info.get('file_name', 'Unknown')}")
             console.print(f"Size: {_format_size(file_info.get('file_size', 0))}")
             console.print(f"Hash: {file_info.get('file_hash', 'N/A')[:16]}...")
+            console.print(f"[dim]Full Message ID: {file_info['id']}[/dim]")
+            console.print(f"[dim]File Path: {file_info.get('file_path', 'N/A')}[/dim]")
             if file_info.get('ipfs_cid'):
                 console.print(f"IPFS: {file_info['ipfs_cid']}")
             
@@ -316,10 +453,10 @@ def receive(
                 console.print("[yellow]Cancelled[/yellow]")
                 return
             
-            # Download and verify
+            # Download and verify (use FULL message ID from file_info, not partial user input)
             output_path = Path(output_dir)
             downloaded_file = await transfer_manager.receive_file(
-                message_id=message_id,
+                message_id=file_info["id"],  # Use full ID, not the partial user input
                 output_dir=output_path,
                 expected_hash=file_info.get("file_hash"),
                 expected_ipfs_cid=file_info.get("ipfs_cid")

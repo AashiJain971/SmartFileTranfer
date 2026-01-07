@@ -13,7 +13,8 @@ class APIClient:
     
     def __init__(self, base_url: str = "http://localhost:8000"):
         self.base_url = base_url
-        self.client = httpx.AsyncClient(timeout=30.0)
+        # Use 90s timeout for slow database queries (especially room messages)
+        self.client = httpx.AsyncClient(timeout=90.0)
     
     def _get_headers(self) -> Dict[str, str]:
         """Get headers with authorization token"""
