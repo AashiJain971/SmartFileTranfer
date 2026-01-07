@@ -224,7 +224,8 @@ def inbox():
             
             console.print(table)
             console.print(f"\n[cyan]To download:[/cyan] fylix receive <ID>")
-            console.print(f"[dim]Example: fylix receive {incoming_files[0]['message_id'][:7]}[/dim]")
+            console.print(f"[cyan]To verify:[/cyan] fylix verify <ID>")
+            console.print(f"[dim]Example: fylix receive {incoming_files[0]['message_id'][:7]} or fylix verify {incoming_files[0]['message_id'][:7]}[/dim]")
         
         except Exception as e:
             import traceback
