@@ -10,6 +10,7 @@ import typer
 from rich.console import Console
 from rich.table import Table
 from rich.prompt import Confirm
+import httpx
 
 from fylix.config import config
 from fylix.api_client import api_client
@@ -439,6 +440,338 @@ def outbox(range: str = typer.Argument("1-10", help="Message range (e.g., 1-10, 
             await api_client.close()
     
     asyncio.run(_outbox(range))
+
+
+# ==================== CHAT ROOM MANAGEMENT ====================
+
+@app.command()
+def rooms():
+    """
+    List all your chat rooms (direct chats and groups)
+    
+    Shows:
+    - Room name/participants
+    - Room type (direct/group)
+    - Member count
+    - Room ID for other commands
+    
+    Example: fylix rooms
+    """
+    async def _rooms():
+        if not config.is_logged_in():
+            console.print("[red]✗ Not logged in. Run 'fylix login <email>' first[/red]")
+            raise typer.Exit(1)
+        
+        try:
+            console.print("\n[cyan]💬 Fetching chat rooms...[/cyan]")
+            
+            rooms_response = await api_client.get_user_rooms()
+            rooms = rooms_response.get("rooms", [])
+            
+            if not rooms:
+                console.print("[yellow]No chat rooms found[/yellow]")
+                console.print("[dim]Create a group: fylix create <name>[/dim]")
+                console.print("[dim]Send a file to start direct chat: fylix send <file> <email>[/dim]")
+                return
+            
+            # Display table
+            from rich.table import Table
+            from rich import box
+            table = Table(title=f"Chat Rooms ({len(rooms)} total)", box=box.ROUNDED)
+            table.add_column("Name/Participants", style="cyan")
+            table.add_column("Type", style="green")
+            table.add_column("Members", style="magenta")
+            table.add_column("Room ID", style="dim")
+            
+            current_user_id = config.get_user_id()
+            
+            for room in rooms:
+                room_type = room.get("type", "direct")
+                
+                # Format room name
+                if room_type == "group":
+                    room_name = room.get("name", "Unnamed Group")
+                else:
+                    # For direct chats, show other participant
+                    members = room.get("members", [])
+                    other_member = next((m for m in members if m.get("user_id") != current_user_id), None)
+                    room_name = other_member.get("username", "Unknown") if other_member else "Unknown"
+                
+                member_count = len(room.get("members", []))
+                room_id_short = room["id"][:8] + "..."
+                
+                table.add_row(
+                    room_name,
+                    room_type.upper(),
+                    str(member_count),
+                    room_id_short
+                )
+            
+            console.print(table)
+            console.print("\n[cyan]Commands:[/cyan]")
+            console.print("[dim]View members: fylix members <room_id>[/dim]")
+            console.print("[dim]Create group: fylix create <name>[/dim]")
+        
+        except Exception as e:
+            import traceback
+            console.print(f"[red]✗ Failed to fetch rooms: {e}[/red]")
+            console.print(f"[dim]{traceback.format_exc()}[/dim]")
+            raise typer.Exit(1)
+        
+        finally:
+            await api_client.close()
+    
+    asyncio.run(_rooms())
+
+
+@app.command()
+def create(
+    name: str = typer.Argument(..., help="Group chat name"),
+    members: Optional[str] = typer.Option(None, "--members", "-m", help="Comma-separated emails to add")
+):
+    """
+    Create a new group chat
+    
+    Examples:
+        fylix create "Team Project"
+        fylix create "Study Group" --members user1@email.com,user2@email.com
+    """
+    async def _create():
+        if not config.is_logged_in():
+            console.print("[red]✗ Not logged in. Run 'fylix login <email>' first[/red]")
+            raise typer.Exit(1)
+        
+        try:
+            console.print(f"\n[cyan]🆕 Creating group chat '{name}'...[/cyan]")
+            
+            # Parse members if provided
+            member_list = None
+            if members:
+                member_list = [email.strip() for email in members.split(",")]
+                console.print(f"[dim]Adding {len(member_list)} members...[/dim]")
+            
+            # Create group
+            room = await api_client.create_group_chat(name, member_list)
+            
+            console.print(f"\n[green]✓ Group chat created![/green]")
+            console.print(f"Name: {room.get('name')}")
+            console.print(f"Room ID: {room.get('id')}")
+            console.print(f"Members: {len(room.get('members', []))}")
+            
+            console.print(f"\n[cyan]Next steps:[/cyan]")
+            console.print(f"[dim]Add members: fylix add {room.get('id')[:8]} <email>[/dim]")
+            console.print(f"[dim]Send files: fylix send <file> <email>[/dim]")
+        
+        except Exception as e:
+            console.print(f"[red]✗ Failed to create group: {e}[/red]")
+            raise typer.Exit(1)
+        
+        finally:
+            await api_client.close()
+    
+    asyncio.run(_create())
+
+
+@app.command()
+def members(
+    room_id: str = typer.Argument(..., help="Room ID (from 'fylix rooms' command)")
+):
+    """
+    View members of a chat room
+    
+    Example: fylix members abc12345
+    """
+    async def _members():
+        if not config.is_logged_in():
+            console.print("[red]✗ Not logged in. Run 'fylix login <email>' first[/red]")
+            raise typer.Exit(1)
+        
+        try:
+            console.print(f"\n[cyan]👥 Fetching room members...[/cyan]")
+            
+            # Find room by partial ID match
+            rooms_response = await api_client.get_user_rooms()
+            rooms = rooms_response.get("rooms", [])
+            
+            matching_room = None
+            for room in rooms:
+                if room["id"] == room_id or room["id"].startswith(room_id):
+                    matching_room = room
+                    break
+            
+            if not matching_room:
+                console.print(f"[red]✗ Room {room_id} not found[/red]")
+                console.print("[dim]Use 'fylix rooms' to see available rooms[/dim]")
+                raise typer.Exit(1)
+            
+            # Get detailed room info
+            room_details = await api_client.get_room_details(matching_room["id"])
+            
+            room_name = room_details.get("name", "Unknown")
+            members_list = room_details.get("members", [])
+            
+            console.print(f"\n[cyan]Room: {room_name}[/cyan]")
+            console.print(f"Type: {room_details.get('type', 'unknown').upper()}")
+            console.print(f"Total Members: {len(members_list)}")
+            
+            # Display members table
+            from rich.table import Table
+            from rich import box
+            table = Table(title="Members", box=box.ROUNDED)
+            table.add_column("Username", style="cyan")
+            table.add_column("Role", style="green")
+            table.add_column("Joined", style="dim")
+            
+            for member in members_list:
+                # Format timestamp
+                from datetime import datetime
+                try:
+                    dt = datetime.fromisoformat(member["joined_at"].replace('Z', '+00:00'))
+                    joined_str = dt.strftime("%b %d, %Y")
+                except:
+                    joined_str = "Unknown"
+                
+                table.add_row(
+                    member.get("username", "Unknown"),
+                    member.get("role", "member").upper(),
+                    joined_str
+                )
+            
+            console.print(table)
+            
+            if room_details.get("type") == "group":
+                console.print(f"\n[cyan]Commands:[/cyan]")
+                console.print(f"[dim]Add member: fylix add {matching_room['id'][:8]} <email>[/dim]")
+        
+        except Exception as e:
+            import traceback
+            console.print(f"[red]✗ Failed to fetch members: {e}[/red]")
+            console.print(f"[dim]{traceback.format_exc()}[/dim]")
+            raise typer.Exit(1)
+        
+        finally:
+            await api_client.close()
+    
+    asyncio.run(_members())
+
+
+@app.command()
+def add(
+    room_id: str = typer.Argument(..., help="Room ID"),
+    email: str = typer.Argument(..., help="Email of user to add")
+):
+    """
+    Add member to a group chat (admin only)
+    
+    Example: fylix add abc12345 user@email.com
+    """
+    async def _add():
+        if not config.is_logged_in():
+            console.print("[red]✗ Not logged in. Run 'fylix login <email>' first[/red]")
+            raise typer.Exit(1)
+        
+        try:
+            console.print(f"\n[cyan]➕ Adding {email} to room...[/cyan]")
+            
+            # Find room by partial ID
+            rooms_response = await api_client.get_user_rooms()
+            rooms = rooms_response.get("rooms", [])
+            
+            matching_room = None
+            for room in rooms:
+                if room["id"] == room_id or room["id"].startswith(room_id):
+                    matching_room = room
+                    break
+            
+            if not matching_room:
+                console.print(f"[red]✗ Room {room_id} not found[/red]")
+                raise typer.Exit(1)
+            
+            # Add member (backend will validate admin permissions)
+            result = await api_client.add_room_member(matching_room["id"], email)
+            
+            console.print(f"[green]✓ {result.get('message', 'User added successfully')}[/green]")
+            console.print(f"\n[dim]View members: fylix members {matching_room['id'][:8]}[/dim]")
+        
+        except httpx.HTTPStatusError as e:
+            if e.response.status_code == 403:
+                console.print("[red]✗ Only room admins can add members[/red]")
+            else:
+                error_detail = e.response.json().get('detail', str(e))
+                console.print(f"[red]✗ Failed to add member: {error_detail}[/red]")
+            raise typer.Exit(1)
+        except Exception as e:
+            console.print(f"[red]✗ Failed to add member: {e}[/red]")
+            raise typer.Exit(1)
+        
+        finally:
+            await api_client.close()
+    
+    asyncio.run(_add())
+
+
+@app.command()
+def leave(
+    room_id: str = typer.Argument(..., help="Room ID to leave")
+):
+    """
+    Leave a group chat
+    
+    Note: Cannot leave direct chats (they are auto-created)
+    
+    Example: fylix leave abc12345
+    """
+    async def _leave():
+        if not config.is_logged_in():
+            console.print("[red]✗ Not logged in. Run 'fylix login <email>' first[/red]")
+            raise typer.Exit(1)
+        
+        try:
+            console.print(f"\n[cyan]🚪 Leaving room...[/cyan]")
+            
+            # Find room
+            rooms_response = await api_client.get_user_rooms()
+            rooms = rooms_response.get("rooms", [])
+            
+            matching_room = None
+            for room in rooms:
+                if room["id"] == room_id or room["id"].startswith(room_id):
+                    matching_room = room
+                    break
+            
+            if not matching_room:
+                console.print(f"[red]✗ Room {room_id} not found[/red]")
+                raise typer.Exit(1)
+            
+            # Check if it's a direct chat
+            if matching_room.get("type") == "direct":
+                console.print("[yellow]⚠ Cannot leave direct chats[/yellow]")
+                console.print("[dim]Direct chats are automatically created and cannot be left[/dim]")
+                return
+            
+            # Confirm
+            room_name = matching_room.get("name", "Unknown")
+            confirm = typer.confirm(f"Leave '{room_name}'?", default=False)
+            
+            if not confirm:
+                console.print("[yellow]Cancelled[/yellow]")
+                return
+            
+            # Remove self from room (use add_room_member with DELETE method - needs backend support)
+            current_user_id = config.get_user_id()
+            
+            # For now, show message that backend doesn't support this yet
+            console.print("[yellow]⚠ Leave room feature requires backend support[/yellow]")
+            console.print("[dim]Contact room admin to be removed[/dim]")
+            
+        except Exception as e:
+            console.print(f"[red]✗ Failed to leave room: {e}[/red]")
+            raise typer.Exit(1)
+        
+        finally:
+            await api_client.close()
+    
+    asyncio.run(_leave())
 
 
 # ==================== SEND ====================

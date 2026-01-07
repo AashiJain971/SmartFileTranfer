@@ -85,6 +85,42 @@ class APIClient:
         response.raise_for_status()
         return response.json()
     
+    async def create_group_chat(self, name: str, members: list = None) -> Dict[str, Any]:
+        """Create a group chat"""
+        payload = {
+            "type": "group",
+            "name": name
+        }
+        if members:
+            payload["members"] = members
+        
+        response = await self.client.post(
+            f"{self.base_url}/chat/rooms",
+            headers=self._get_headers(),
+            json=payload
+        )
+        response.raise_for_status()
+        return response.json()
+    
+    async def get_room_details(self, room_id: str) -> Dict[str, Any]:
+        """Get room details including members"""
+        response = await self.client.get(
+            f"{self.base_url}/chat/rooms/{room_id}",
+            headers=self._get_headers()
+        )
+        response.raise_for_status()
+        return response.json()
+    
+    async def add_room_member(self, room_id: str, user_identifier: str) -> Dict[str, Any]:
+        """Add member to room (admin only) - user_identifier can be email, username, or user_id"""
+        # Backend endpoint accepts user_id in URL and should handle email/username lookup
+        response = await self.client.post(
+            f"{self.base_url}/chat/rooms/{room_id}/members/{user_identifier}",
+            headers=self._get_headers()
+        )
+        response.raise_for_status()
+        return response.json()
+    
     async def get_room_messages(self, room_id: str, limit: int = 50) -> Dict[str, Any]:
         """Get messages from a chat room (includes file transfers)"""
         response = await self.client.get(
