@@ -39,15 +39,21 @@ class APIClient:
         response.raise_for_status()
         return response.json()
     
-    async def signup(self, email: str, username: str, password: str) -> Dict[str, Any]:
+    async def signup(self, email: str, username: str, password: str, first_name: str = None, last_name: str = None) -> Dict[str, Any]:
         """Sign up for FYLIX account"""
+        payload = {
+            "email": email,
+            "username": username,
+            "password": password
+        }
+        if first_name:
+            payload["first_name"] = first_name
+        if last_name:
+            payload["last_name"] = last_name
+            
         response = await self.client.post(
             f"{self.base_url}/auth/signup",
-            json={
-                "email": email,
-                "username": username,
-                "password": password
-            }
+            json=payload
         )
         response.raise_for_status()
         return response.json()
@@ -56,6 +62,16 @@ class APIClient:
         """Get current user info"""
         response = await self.client.get(
             f"{self.base_url}/auth/me",
+            headers=self._get_headers()
+        )
+        response.raise_for_status()
+        return response.json()
+    
+    async def delete_account(self, password: str) -> Dict[str, Any]:
+        """Permanently delete account"""
+        response = await self.client.delete(
+            f"{self.base_url}/auth/account",
+            params={"password": password},
             headers=self._get_headers()
         )
         response.raise_for_status()

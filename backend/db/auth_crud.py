@@ -307,3 +307,51 @@ async def verify_file_ownership(file_id: str, user_id: str) -> bool:
     except Exception as e:
         print(f"Error verifying file ownership: {e}")
         return False
+
+async def delete_user_account(user_id: str) -> bool:
+    """
+    Permanently delete a user account and all associated data.
+    Uses database CASCADE constraints for automatic cleanup - FAST and reliable!
+    
+    Database automatically deletes:
+    - user_sessions (ON DELETE CASCADE)
+    - password_reset_tokens (ON DELETE CASCADE)  
+    - file_sessions (ON DELETE CASCADE)
+    - chat_room_members (ON DELETE CASCADE)
+    - messages (ON DELETE CASCADE via sender_id)
+    - chat_rooms created_by user (ON DELETE CASCADE)
+    """
+    try:
+        print(f"🗑️  Starting FAST CASCADE deletion for user {user_id}")
+        
+        # Just delete the user - database CASCADE handles everything!
+        delete_result = supabase.table("users").delete().eq("id", user_id).execute()
+        
+        # Verify deletion succeeded
+        if delete_result.data and len(delete_result.data) > 0:
+            deleted_user = delete_result.data[0]
+            print(f"✅ User deleted: {deleted_user.get('username', 'unknown')} ({deleted_user.get('email', 'unknown')})")
+        else:
+            # Double-check user is actually gone
+            print(f"⚠️  Delete returned no data, verifying...")
+            verify = supabase.table("users").select("id").eq("id", user_id).execute()
+            if verify.data and len(verify.data) > 0:
+                raise Exception(f"User {user_id} still exists after deletion")
+            print(f"✅ User {user_id} verified deleted")
+        
+        # Clear cache
+        try:
+            from services.cache_service import invalidate_user_cache
+            invalidate_user_cache(user_id)
+            print("💾 Cache cleared")
+        except Exception as e:
+            print(f"⚠️  Cache clear failed (non-critical): {e}")
+        
+        print(f"✅ Account deletion completed successfully!")
+        return True
+        
+    except Exception as e:
+        print(f"❌ CRITICAL ERROR deleting user: {e}")
+        import traceback
+        traceback.print_exc()
+        raise Exception(f"Failed to delete user: {str(e)}")

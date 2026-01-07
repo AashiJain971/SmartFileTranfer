@@ -15,6 +15,7 @@ import httpx
 from fylix.config import config
 from fylix.api_client import api_client
 from fylix.transfer import transfer_manager
+from fylix import __version__
 
 app = typer.Typer(
     name="fylix",
@@ -23,6 +24,107 @@ app = typer.Typer(
 )
 
 console = Console()
+
+
+# ==================== VERSION ====================
+
+def version_callback(value: bool):
+    """Callback for --version/-v flag"""
+    if value:
+        console.print(f"[cyan]FYLIX CLI[/cyan] [green]v{__version__}[/green]")
+        raise typer.Exit()
+
+@app.callback()
+def main(
+    version: Optional[bool] = typer.Option(
+        None,
+        "--version",
+        "--v",
+        "-v",
+        help="Show version and exit",
+        callback=version_callback,
+        is_eager=True
+    )
+):
+    """
+    FYLIX - Secure file transfer with blockchain verification
+    """
+    pass
+
+
+# ==================== SIGNUP ====================
+
+@app.command()
+def signup(
+    email: str = typer.Argument(..., help="Your email address"),
+    username: str = typer.Argument(..., help="Your username (3-50 chars, alphanumeric + _ -)"),
+    password: str = typer.Option(..., "--password", "-p", prompt=True, hide_input=True, confirmation_prompt=True, help="Your password (min 8 chars)"),
+    first_name: str = typer.Option(None, "--first-name", "-f", help="Your first name (optional)"),
+    last_name: str = typer.Option(None, "--last-name", "-l", help="Your last name (optional)")
+):
+    """
+    Create a new FYLIX account
+    
+    Example: fylix signup user@example.com johndoe
+    """
+    async def _signup():
+        try:
+            # Validate password length
+            if len(password) < 8:
+                console.print("[red]✗ Password must be at least 8 characters long[/red]")
+                raise typer.Exit(1)
+            
+            console.print(f"\n[cyan]📝 Creating account for {email}...[/cyan]")
+            
+            # Attempt signup
+            auth_response = await api_client.signup(
+                email=email,
+                username=username,
+                password=password,
+                first_name=first_name,
+                last_name=last_name
+            )
+            
+            # Extract tokens
+            access_token = auth_response["access_token"]
+            refresh_token = auth_response["refresh_token"]
+            user_id = auth_response["user"]["id"]
+            username_from_response = auth_response["user"]["username"]
+            
+            # Save credentials locally
+            config.save_credentials(
+                email=email,
+                access_token=access_token,
+                refresh_token=refresh_token,
+                user_id=user_id,
+                username=username_from_response
+            )
+            
+            console.print(f"[green]✓ Account created successfully![/green]")
+            console.print(f"[green]✓ Logged in as {username_from_response}[/green]")
+            console.print(f"[dim]Credentials stored in {config.credentials_file}[/dim]")
+        
+        except httpx.HTTPStatusError as e:
+            try:
+                error_detail = e.response.json().get("detail", str(e))
+            except:
+                error_detail = str(e)
+            
+            if "email" in str(error_detail).lower() and "already" in str(error_detail).lower():
+                console.print(f"[red]✗ Email already registered. Try logging in instead.[/red]")
+            elif "username" in str(error_detail).lower() and ("already" in str(error_detail).lower() or "taken" in str(error_detail).lower()):
+                console.print(f"[red]✗ Username already taken. Choose a different username.[/red]")
+            else:
+                console.print(f"[red]✗ Signup failed: {error_detail}[/red]")
+            raise typer.Exit(1)
+        except Exception as e:
+            console.print(f"[red]✗ Signup failed: {str(e)}[/red]")
+            raise typer.Exit(1)
+        
+        finally:
+            await api_client.close()
+    
+    asyncio.run(_signup())
 
 
 # ==================== LOGIN ====================
@@ -88,6 +190,89 @@ def logout():
     creds = config.get_credentials()
     config.clear_credentials()
     console.print(f"[green]✓ Logged out {creds.get('email')}[/green]")
+
+
+# ==================== DELETE ACCOUNT ====================
+
+@app.command()
+def deleteaccount(
+    password: str = typer.Option(..., "--password", "-p", prompt=True, hide_input=True, help="Your password for confirmation")
+):
+    """
+    Permanently delete your FYLIX account and all associated data
+    
+    ⚠️  WARNING: This action cannot be undone!
+    
+    This will:
+    - Delete your account permanently
+    - Remove you from all chat rooms (groups and direct chats)
+    - Delete all your messages
+    - Delete all your file sessions
+    - Remove all your data from the system
+    
+    Example: fylix deleteaccount
+    """
+    if not config.is_logged_in():
+        console.print("[red]✗ You must be logged in to delete your account[/red]")
+        raise typer.Exit(1)
+    
+    async def _delete_account():
+        try:
+            creds = config.get_credentials()
+            username = creds.get('username', 'Unknown')
+            email = creds.get('email', 'Unknown')
+            
+            # Final confirmation
+            console.print("\n[red bold]⚠️  WARNING: PERMANENT ACCOUNT DELETION[/red bold]")
+            console.print(f"[yellow]Account: {username} ({email})[/yellow]")
+            console.print("[red]This will permanently delete:[/red]")
+            console.print("  • Your account")
+            console.print("  • All your messages")
+            console.print("  • All your file transfers")
+            console.print("  • Your membership in all rooms")
+            console.print("\n[red bold]This action CANNOT be undone![/red bold]\n")
+            
+            confirm = Confirm.ask("[red]Are you absolutely sure you want to delete your account?[/red]")
+            if not confirm:
+                console.print("[green]✓ Account deletion cancelled[/green]")
+                return
+            
+            # Double confirmation
+            confirm2 = Confirm.ask("[red bold]Type YES to confirm permanent deletion[/red bold]", default=False)
+            if not confirm2:
+                console.print("[green]✓ Account deletion cancelled[/green]")
+                return
+            
+            console.print(f"\n[cyan]🗑️  Deleting account {username}...[/cyan]")
+            
+            # Delete account
+            result = await api_client.delete_account(password)
+            
+            # Clear local credentials
+            config.clear_credentials()
+            
+            console.print(f"[green]✓ {result.get('message', 'Account permanently deleted')}[/green]")
+            console.print("[dim]All your data has been removed from the system[/dim]")
+        
+        except httpx.HTTPStatusError as e:
+            try:
+                error_detail = e.response.json().get("detail", str(e))
+            except:
+                error_detail = str(e)
+            
+            if "password" in str(error_detail).lower() and "incorrect" in str(error_detail).lower():
+                console.print("[red]✗ Incorrect password. Account deletion cancelled.[/red]")
+            else:
+                console.print(f"[red]✗ Account deletion failed: {error_detail}[/red]")
+            raise typer.Exit(1)
+        except Exception as e:
+            console.print(f"[red]✗ Account deletion failed: {str(e)}[/red]")
+            raise typer.Exit(1)
+        
+        finally:
+            await api_client.close()
+    
+    asyncio.run(_delete_account())
 
 
 # ==================== WHOAMI ====================

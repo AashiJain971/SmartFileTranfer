@@ -7,6 +7,7 @@ import logging
 logger = logging.getLogger(__name__)
 
 # Initialize Supabase client (simple configuration)
+# Database CASCADE constraints make deletion fast - no custom timeout needed
 supabase = create_client(settings.SUPABASE_URL, settings.SUPABASE_KEY)
 
 T = TypeVar('T')

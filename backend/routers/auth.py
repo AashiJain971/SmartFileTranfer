@@ -1,7 +1,9 @@
 from fastapi import APIRouter, HTTPException, status, Depends, Request
 from fastapi.responses import JSONResponse
+from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from datetime import datetime, timedelta
 from typing import Dict, Any
+from supabase import create_client
 
 from models.auth import (
     UserCreate, UserLogin, UserResponse, TokenResponse, 
@@ -12,12 +14,14 @@ from db.auth_crud import (
     create_user, get_user_by_email, get_user_by_email_with_login_retry, get_user_by_username, get_user_by_id,
     update_last_login, create_user_session, invalidate_user_session,
     create_password_reset_token, verify_reset_token, 
-    mark_reset_token_used, update_user_password
+    mark_reset_token_used, update_user_password, delete_user_account
 )
 from dependencies.auth import get_current_user, get_current_active_user
 from config import settings
 
 router = APIRouter(prefix="/auth", tags=["Authentication"])
+security = HTTPBearer()
+supabase = create_client(settings.SUPABASE_URL, settings.SUPABASE_KEY)
 
 @router.post("/test-signup")
 async def test_signup(user_data: UserCreate):
@@ -327,4 +331,102 @@ async def change_password(
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Password change failed: {str(e)}"
+        )
+
+@router.delete("/account")
+async def delete_account(
+    password: str,
+    credentials: HTTPAuthorizationCredentials = Depends(security)
+):
+    """Permanently delete user account and all associated data"""
+    try:
+        # Verify token and get user ID directly
+        payload = auth_service.verify_token(credentials.credentials)
+        user_id = payload.get("sub")
+        
+        if not user_id:
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Invalid token"
+            )
+        
+        # Get password hash directly from database (faster than full user fetch)
+        try:
+            print(f"Fetching password hash for user {user_id}")
+            result = supabase.table("users").select("password_hash").eq("id", user_id).execute()
+            print(f"Supabase result: {result}")
+            print(f"Result data: {result.data}")
+            
+            if not result.data or len(result.data) == 0:
+                print(f"User not found in database: {user_id}")
+                raise HTTPException(
+                    status_code=status.HTTP_404_NOT_FOUND,
+                    detail="User not found"
+                )
+            
+            password_hash = result.data[0].get("password_hash")
+            if not password_hash:
+                print(f"Password hash missing for user {user_id}")
+                raise HTTPException(
+                    status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                    detail="User data corrupted - password hash missing"
+                )
+                
+            print(f"Successfully fetched password hash for user {user_id}")
+            
+        except HTTPException:
+            raise
+        except Exception as e:
+            print(f"Error fetching user for deletion: {e}")
+            print(f"Error type: {type(e).__name__}")
+            import traceback
+            traceback.print_exc()
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail=f"Failed to verify user: {type(e).__name__}: {str(e)}"
+            )
+        
+        # Verify password before deletion
+        print(f"Verifying password for user {user_id}")
+        if not auth_service.verify_password(password, password_hash):
+            print(f"Incorrect password provided for user {user_id}")
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Incorrect password"
+            )
+        
+        print(f"Password verified, proceeding with deletion for user {user_id}")
+        
+        # Delete account and all associated data
+        try:
+            success = await delete_user_account(user_id)
+            
+            if not success:
+                raise HTTPException(
+                    status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                    detail="Failed to delete account"
+                )
+            
+            return {"message": "Account permanently deleted"}
+            
+        except Exception as delete_error:
+            # Log the actual error
+            print(f"Account deletion error: {delete_error}")
+            import traceback
+            traceback.print_exc()
+            
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail=f"Account deletion failed: {str(delete_error)}"
+            )
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Unexpected error in delete_account endpoint: {e}")
+        import traceback
+        traceback.print_exc()
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Account deletion failed: {str(e)}"
         )

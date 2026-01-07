@@ -2,7 +2,7 @@ from setuptools import setup, find_packages
 
 setup(
     name="fylix-cli",
-    version="1.0.0",
+    version="9.7.1.0",
     description="FYLIX - Secure file transfer with blockchain verification",
     author="FYLIX Team",
     packages=find_packages(),
