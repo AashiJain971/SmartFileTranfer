@@ -207,6 +207,14 @@ async def create_chat_room(
         # Get complete room info for response
         members = await ChatCRUD.get_room_members_detailed(room["id"])
         
+        # ✅ INVALIDATE CACHE FOR ALL ROOM MEMBERS
+        from services.cache_service import cache
+        for member in members:
+            member_id = member["user_id"]
+            cache_key = f"rooms:{member_id}"
+            await cache.delete(cache_key)
+            print(f"🗑️ Cleared cache for member: {member.get('username', member_id[:8])}")
+        
         room_response = ChatRoomResponse(
             id=room["id"],
             name=room["name"],
@@ -1523,6 +1531,112 @@ async def add_user_to_room(
             return {"status": "success", "message": f"User {target_user['username']} added to room"}
         else:
             raise HTTPException(status_code=400, detail="Failed to add user to room")
+            
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@router.delete("/rooms/{room_id}")
+async def delete_room(
+    room_id: str,
+    current_user: dict = Depends(get_current_active_user)
+):
+    """Delete a chat room (admin only, group chats only)"""
+    try:
+        print(f"🗑️ DELETE ROOM: {room_id} by user {current_user['id']}")
+        
+        # Get room details
+        room = await ChatCRUD.get_chat_room_by_id(room_id)
+        print(f"Room found: {room}")
+        if not room:
+            raise HTTPException(status_code=404, detail="Room not found")
+        
+        # Check if it's a group chat
+        if room["type"] != "group":
+            raise HTTPException(status_code=400, detail="Cannot delete direct chats")
+        
+        # Check if current user is admin
+        user_role = await ChatCRUD.get_user_role_in_room(current_user["id"], room_id)
+        print(f"User role: {user_role}")
+        if user_role != "admin":
+            raise HTTPException(status_code=403, detail="Only room admins can delete rooms")
+        
+        # Get all room members before deleting (to clear their caches)
+        members = await ChatCRUD.get_room_members_detailed(room_id)
+        member_ids = [m["user_id"] for m in members]
+        print(f"Room has {len(member_ids)} members")
+        
+        # Delete the room (cascade will delete members and messages)
+        print(f"Deleting room {room_id}...")
+        success = await ChatCRUD.delete_room(room_id)
+        print(f"Delete result: {success}")
+        
+        if success:
+            # Invalidate cache for ALL members who were in this room
+            from services.cache_service import cache
+            for member_id in member_ids:
+                cache_key = f"rooms:{member_id}"
+                deleted = await cache.delete(cache_key)
+                print(f"Cleared cache for member: {member_id[:8]}... (deleted: {deleted})")
+            
+            # Also clear member cache for the room
+            await cache.delete(f"members:{room_id}")
+            
+            # Also invalidate room-specific caches
+            from services.cache_invalidation import invalidator
+            await invalidator.invalidate_room(room_id)
+            
+            print(f"✅ Room {room_id[:8]}... deleted and all caches cleared")
+            
+            return {"status": "success", "message": f"Room deleted successfully"}
+        else:
+            raise HTTPException(status_code=400, detail="Failed to delete room")
+            
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"❌ DELETE ROOM ERROR: {e}")
+        import traceback
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=str(e))
+
+@router.delete("/rooms/{room_id}/members/{user_id}")
+async def remove_room_member(
+    room_id: str,
+    user_id: str,
+    current_user: dict = Depends(get_current_active_user)
+):
+    """Remove a member from room or leave room (admin or self)"""
+    try:
+        # Get room details
+        room = await ChatCRUD.get_chat_room_by_id(room_id)
+        if not room:
+            raise HTTPException(status_code=404, detail="Room not found")
+        
+        # Check if it's a group chat
+        if room["type"] != "group":
+            raise HTTPException(status_code=400, detail="Cannot leave/remove from direct chats")
+        
+        # Check permissions: admin can remove anyone, user can remove self
+        current_user_role = await ChatCRUD.get_user_role_in_room(current_user["id"], room_id)
+        
+        if user_id == current_user["id"]:
+            # User is leaving
+            success = await ChatCRUD.remove_room_member(room_id, user_id)
+            message = "You left the room"
+        elif current_user_role == "admin":
+            # Admin is removing someone
+            success = await ChatCRUD.remove_room_member(room_id, user_id)
+            target_user = await get_user_by_id(user_id)
+            message = f"Removed {target_user['username']} from room"
+        else:
+            raise HTTPException(status_code=403, detail="Only admins can remove other members")
+        
+        if success:
+            return {"status": "success", "message": message}
+        else:
+            raise HTTPException(status_code=400, detail="Failed to remove member")
             
     except HTTPException:
         raise

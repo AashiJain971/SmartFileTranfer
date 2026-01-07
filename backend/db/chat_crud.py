@@ -879,3 +879,55 @@ class ChatCRUD:
         except Exception as e:
             print(f"Error getting room statistics: {e}")
             return {"total_messages": 0, "total_files": 0, "total_members": 0}
+    
+    @staticmethod
+    async def delete_room(room_id: str) -> bool:
+        """Delete a chat room (admin only, group chats only)"""
+        try:
+            print(f"🗑️ Deleting room {room_id}...")
+            
+            # Step 1: Delete all messages in the room
+            print(f"Deleting messages...")
+            messages_result = supabase.table("messages")\
+                .delete()\
+                .eq("room_id", room_id)\
+                .execute()
+            print(f"Deleted {len(messages_result.data) if messages_result.data else 0} messages")
+            
+            # Step 2: Delete all room members
+            print(f"Deleting members...")
+            members_result = supabase.table("chat_room_members")\
+                .delete()\
+                .eq("room_id", room_id)\
+                .execute()
+            print(f"Deleted {len(members_result.data) if members_result.data else 0} members")
+            
+            # Step 3: Delete the room itself
+            print(f"Deleting room...")
+            result = supabase.table("chat_rooms")\
+                .delete()\
+                .eq("id", room_id)\
+                .execute()
+            print(f"Room deletion result: {result.data}")
+            
+            return True
+        except Exception as e:
+            print(f"❌ Error deleting room: {e}")
+            import traceback
+            traceback.print_exc()
+            return False
+    
+    @staticmethod
+    async def remove_room_member(room_id: str, user_id: str) -> bool:
+        """Remove a member from a room"""
+        try:
+            result = supabase.table("chat_room_members")\
+                .delete()\
+                .eq("room_id", room_id)\
+                .eq("user_id", user_id)\
+                .execute()
+            
+            return True
+        except Exception as e:
+            print(f"Error removing member: {e}")
+            return False

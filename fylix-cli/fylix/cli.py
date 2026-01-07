@@ -481,7 +481,8 @@ def rooms():
             table.add_column("Name/Participants", style="cyan")
             table.add_column("Type", style="green")
             table.add_column("Members", style="magenta")
-            table.add_column("Room ID", style="dim")
+            table.add_column("Admin", style="yellow")
+            table.add_column("ID (7)", style="bright_blue")
             
             current_user_id = config.get_user_id()
             
@@ -498,19 +499,27 @@ def rooms():
                     room_name = other_member.get("username", "Unknown") if other_member else "Unknown"
                 
                 member_count = len(room.get("members", []))
-                room_id_short = room["id"][:8] + "..."
+                room_id_short = room["id"][:7]  # Only 7 chars
+                
+                # Find admin
+                members = room.get("members", [])
+                admin = next((m.get("username", "?") for m in members if m.get("role") == "admin"), "-")
                 
                 table.add_row(
                     room_name,
                     room_type.upper(),
                     str(member_count),
+                    admin,
                     room_id_short
                 )
             
             console.print(table)
             console.print("\n[cyan]Commands:[/cyan]")
-            console.print("[dim]View members: fylix members <room_id>[/dim]")
-            console.print("[dim]Create group: fylix create <name>[/dim]")
+            console.print("[dim]View members:    fylix members <room_id>[/dim]")
+            console.print("[dim]Create group:    fylix create <name>[/dim]")
+            console.print("[dim]Send to group:   fylix sendroom <room_id> <file>[/dim]")
+            console.print("[dim]Delete room:     fylix delroom <room_id> (admin only)[/dim]")
+            console.print("\n[yellow]Note:[/yellow] Direct rooms auto-create when you send files via email")
         
         except Exception as e:
             import traceback
@@ -641,7 +650,9 @@ def members(
             
             if room_details.get("type") == "group":
                 console.print(f"\n[cyan]Commands:[/cyan]")
-                console.print(f"[dim]Add member: fylix add {matching_room['id'][:8]} <email>[/dim]")
+                console.print(f"[dim]Add member: fylix add {matching_room['id'][:7]} <email>[/dim]")
+                console.print(f"[dim]Send file:  fylix sendroom {matching_room['id'][:7]} <file>[/dim]")
+                console.print(f"[dim]Delete:     fylix delroom {matching_room['id'][:7]} (admin only)[/dim]")
         
         except Exception as e:
             import traceback
@@ -757,12 +768,12 @@ def leave(
                 console.print("[yellow]Cancelled[/yellow]")
                 return
             
-            # Remove self from room (use add_room_member with DELETE method - needs backend support)
+            # Remove self from room
             current_user_id = config.get_user_id()
+            result = await api_client.remove_room_member(matching_room["id"], current_user_id)
             
-            # For now, show message that backend doesn't support this yet
-            console.print("[yellow]⚠ Leave room feature requires backend support[/yellow]")
-            console.print("[dim]Contact room admin to be removed[/dim]")
+            console.print(f"[green]✓ {result.get('message', 'Left room successfully')}[/green]")
+            console.print(f"\n[dim]View remaining rooms: fylix rooms[/dim]")
             
         except Exception as e:
             console.print(f"[red]✗ Failed to leave room: {e}[/red]")
@@ -772,6 +783,142 @@ def leave(
             await api_client.close()
     
     asyncio.run(_leave())
+
+
+@app.command()
+def delroom(
+    room_id: str = typer.Argument(..., help="Room ID to delete")
+):
+    """
+    Delete a group chat (admin only)
+    
+    Note: Only group admins can delete rooms
+    Direct chats cannot be deleted
+    
+    Example: fylix delroom abc1234
+    """
+    async def _delroom():
+        if not config.is_logged_in():
+            console.print("[red]✗ Not logged in. Run 'fylix login <email>' first[/red]")
+            raise typer.Exit(1)
+        
+        try:
+            console.print(f"\n[cyan]🗑️  Deleting room...[/cyan]")
+            
+            # Find room
+            rooms_response = await api_client.get_user_rooms()
+            rooms = rooms_response.get("rooms", [])
+            
+            matching_room = None
+            for room in rooms:
+                if room["id"] == room_id or room["id"].startswith(room_id):
+                    matching_room = room
+                    break
+            
+            if not matching_room:
+                console.print(f"[red]✗ Room {room_id} not found[/red]")
+                raise typer.Exit(1)
+            
+            # Check if it's a group
+            if matching_room.get("type") != "group":
+                console.print("[red]✗ Cannot delete direct chats[/red]")
+                console.print("[dim]Direct chats are permanent between users[/dim]")
+                return
+            
+            # Confirm deletion
+            room_name = matching_room.get("name", "Unknown")
+            confirm = typer.confirm(f"Delete group '{room_name}'? This cannot be undone.", default=False)
+            
+            if not confirm:
+                console.print("[yellow]Cancelled[/yellow]")
+                return
+            
+            # Delete room via API
+            result = await api_client.delete_room(matching_room["id"])
+            
+            console.print(f"[green]✓ {result.get('message', 'Room deleted successfully')}[/green]")
+            
+            # Wait a moment for cache to clear on backend
+            import asyncio
+            await asyncio.sleep(0.5)
+            
+            console.print(f"\n[dim]View remaining rooms: fylix rooms[/dim]")
+        
+        except Exception as e:
+            console.print(f"[red]✗ Failed to delete room: {e}[/red]")
+            raise typer.Exit(1)
+        
+        finally:
+            await api_client.close()
+    
+    asyncio.run(_delroom())
+
+
+@app.command()
+def sendroom(
+    room_id: str = typer.Argument(..., help="Room ID to send to"),
+    file_path: str = typer.Argument(..., help="File to send")
+):
+    """
+    Send file to a group chat (using room ID)
+    
+    For direct chats, use: fylix send <file> <email>
+    For group chats, use:  fylix sendroom <room_id> <file>
+    
+    Examples:
+        fylix sendroom abc1234 document.pdf
+        fylix sendroom f890ae9 photo.jpg
+    """
+    async def _sendroom():
+        if not config.is_logged_in():
+            console.print("[red]✗ Not logged in. Run 'fylix login <email>' first[/red]")
+            raise typer.Exit(1)
+        
+        try:
+            # Verify file exists
+            from pathlib import Path
+            file = Path(file_path)
+            if not file.exists():
+                console.print(f"[red]✗ File not found: {file_path}[/red]")
+                raise typer.Exit(1)
+            
+            console.print(f"\n[cyan]📤 Sending to group chat...[/cyan]")
+            
+            # Find room by partial ID
+            rooms_response = await api_client.get_user_rooms()
+            rooms = rooms_response.get("rooms", [])
+            
+            matching_room = None
+            for room in rooms:
+                if room["id"] == room_id or room["id"].startswith(room_id):
+                    matching_room = room
+                    break
+            
+            if not matching_room:
+                console.print(f"[red]✗ Room {room_id} not found[/red]")
+                console.print("[dim]Use 'fylix rooms' to see available rooms[/dim]")
+                raise typer.Exit(1)
+            
+            room_name = matching_room.get("name", "Unknown")
+            console.print(f"Room: {room_name}")
+            console.print(f"File: {file.name}")
+            console.print(f"Size: {_format_size(file.stat().st_size)}")
+            
+            # Use existing transfer manager with room_id directly
+            from fylix.transfer import transfer_manager
+            await transfer_manager.send_file(
+                file_path=str(file),
+                room_id=matching_room["id"]  # Use full room ID
+            )
+        
+        except Exception as e:
+            console.print(f"[red]✗ Failed to send file: {e}[/red]")
+            raise typer.Exit(1)
+        
+        finally:
+            await api_client.close()
+    
+    asyncio.run(_sendroom())
 
 
 # ==================== SEND ====================

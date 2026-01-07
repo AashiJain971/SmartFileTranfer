@@ -89,10 +89,9 @@ class APIClient:
         """Create a group chat"""
         payload = {
             "type": "group",
-            "name": name
+            "name": name,
+            "members": members if members else []  # Backend requires this field
         }
-        if members:
-            payload["members"] = members
         
         response = await self.client.post(
             f"{self.base_url}/chat/rooms",
@@ -116,6 +115,24 @@ class APIClient:
         # Backend endpoint accepts user_id in URL and should handle email/username lookup
         response = await self.client.post(
             f"{self.base_url}/chat/rooms/{room_id}/members/{user_identifier}",
+            headers=self._get_headers()
+        )
+        response.raise_for_status()
+        return response.json()
+    
+    async def delete_room(self, room_id: str) -> Dict[str, Any]:
+        """Delete a room (admin only, group chats only)"""
+        response = await self.client.delete(
+            f"{self.base_url}/chat/rooms/{room_id}",
+            headers=self._get_headers()
+        )
+        response.raise_for_status()
+        return response.json()
+    
+    async def remove_room_member(self, room_id: str, user_id: str) -> Dict[str, Any]:
+        """Remove member from room or leave room"""
+        response = await self.client.delete(
+            f"{self.base_url}/chat/rooms/{room_id}/members/{user_id}",
             headers=self._get_headers()
         )
         response.raise_for_status()
