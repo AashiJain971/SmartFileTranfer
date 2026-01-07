@@ -1,0 +1,15 @@
+README.md
+pyproject.toml
+setup.py
+fylix/__init__.py
+fylix/__main__.py
+fylix/api_client.py
+fylix/cli.py
+fylix/config.py
+fylix/transfer.py
+fylix_cli.egg-info/PKG-INFO
+fylix_cli.egg-info/SOURCES.txt
+fylix_cli.egg-info/dependency_links.txt
+fylix_cli.egg-info/entry_points.txt
+fylix_cli.egg-info/requires.txt
+fylix_cli.egg-info/top_level.txt

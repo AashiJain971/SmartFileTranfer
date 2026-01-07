@@ -1,0 +1,358 @@
+# FYLIX CLI
+
+**Cross-platform command-line client for FYLIX file transfer system**
+
+Secure file transfers with chunked upload/download, auto-resume, IPFS storage, and blockchain proof of delivery.
+
+---
+
+## Features
+
+- ✅ **Chunked Transfers**: Upload/download files in chunks (1MB default)
+- ✅ **Auto-Resume**: Automatically recovers from temporary network failures
+- ✅ **Manual Resume**: Resume after process crash or system reboot
+- ✅ **IPFS Storage**: Files stored on decentralized IPFS network (Pinata)
+- ✅ **Blockchain Proof**: Cryptographic verification of file delivery
+- ✅ **Integrity Checks**: Verify file hash and IPFS CID before accepting
+- ✅ **Progress Bars**: Beautiful terminal UI with live progress
+- ✅ **Cross-Platform**: Works on macOS, Linux, and Windows
+
+---
+
+## Installation
+
+### Option 1: Install from source
+
+```bash
+cd fylix-cli
+pip install -e .
+```
+
+### Option 2: Install requirements only
+
+```bash
+cd fylix-cli
+pip install -r requirements.txt
+```
+
+---
+
+## Quick Start
+
+### 1. Login
+
+```bash
+fylix login user@example.com
+```
+
+You'll be prompted for your password. Credentials are stored in `~/.fylix/credentials.json`.
+
+### 2. Check who you are
+
+```bash
+fylix whoami
+```
+
+### 3. Send a file
+
+```bash
+fylix send document.pdf recipient@example.com
+```
+
+Features:
+- Uploads in 1MB chunks
+- Shows progress bar
+- Auto-resumes on network errors
+- Saves state for manual resume if process crashes
+
+### 4. Check inbox
+
+```bash
+fylix inbox
+```
+
+Lists all incoming files with:
+- Sender name
+- Filename and size
+- Integrity status (verified/pending)
+- Message ID for downloading
+
+### 5. Receive a file
+
+```bash
+fylix receive <message_id> -o ~/Downloads
+```
+
+Security features:
+- Asks for confirmation before downloading
+- Shows file metadata
+- Verifies file hash against blockchain
+- Verifies IPFS CID
+- Marks as CORRUPTED if verification fails
+
+### 6. Check transfer status
+
+```bash
+fylix status
+```
+
+Shows:
+- Active transfers (currently uploading)
+- Paused transfers (failed, can resume)
+- Completed transfers
+- Failed transfers
+
+### 7. Resume a transfer
+
+```bash
+fylix resume <transfer_id>
+```
+
+Resumes upload from last successfully uploaded chunk.
+
+### 8. Logout
+
+```bash
+fylix logout
+```
+
+---
+
+## Commands Reference
+
+| Command | Description |
+|---------|-------------|
+| `fylix login <email>` | Authenticate with backend |
+| `fylix logout` | Clear stored credentials |
+| `fylix whoami` | Show current user info |
+| `fylix inbox` | List incoming file transfers |
+| `fylix send <file> <email>` | Send file to recipient |
+| `fylix receive <id> [-o dir]` | Download file with verification |
+| `fylix status` | Show all transfer statuses |
+| `fylix resume <id>` | Resume failed transfer |
+
+---
+
+## How It Works
+
+### Upload Flow (fylix send)
+
+1. **Calculate file hash** - SHA-256 of entire file
+2. **Create direct room** - Get or create chat room with recipient
+3. **Start upload session** - Get file_id and optimal chunk size
+4. **Upload chunks** - Send 1MB chunks with progress bar
+5. **Auto-resume** - Retry up to 3 times on network errors
+6. **Save state** - Persist uploaded chunks for manual resume
+7. **Complete upload** - Trigger IPFS upload and blockchain recording
+8. **Get proof** - Receive IPFS CID and blockchain transaction hash
+
+### Download Flow (fylix receive)
+
+1. **Fetch file details** - Get metadata from inbox
+2. **Ask confirmation** - User must explicitly approve download
+3. **Download file** - Retrieve file from backend
+4. **Calculate hash** - SHA-256 of downloaded file
+5. **Verify blockchain** - Query blockchain proof by file hash
+6. **Compare hashes** - Ensure downloaded file matches blockchain
+7. **Verify IPFS** - Ensure IPFS CID matches (if available)
+8. **Save or reject** - Save if verified, delete if corrupted
+
+### Resume Mechanism
+
+**Auto-Resume** (temporary network failure):
+- Happens automatically during upload
+- Retries failed chunk up to 3 times
+- Uses exponential backoff (1s, 2s, 3s)
+- No user intervention required
+
+**Manual-Resume** (process crash/reboot):
+- Requires explicit `fylix resume <transfer_id>`
+- Reads last state from `~/.fylix/transfers.json`
+- Skips already uploaded chunks
+- Continues from last checkpoint
+
+---
+
+## Storage Locations
+
+### macOS/Linux:
+```
+~/.fylix/
+├── credentials.json    # Auth tokens (chmod 600)
+└── transfers.json      # Transfer states for resume
+```
+
+### Windows:
+```
+C:\Users\<username>\.fylix\
+├── credentials.json
+└── transfers.json
+```
+
+---
+
+## Integrity Verification
+
+Every downloaded file goes through multi-layer verification:
+
+1. **File Hash Check**
+   - Calculate SHA-256 of downloaded file
+   - Compare with expected hash from message
+
+2. **Blockchain Verification**
+   - Query blockchain proof using file hash
+   - Ensure blockchain record matches
+
+3. **IPFS Verification**
+   - Compare IPFS CID from blockchain
+   - Ensure file is stored on IPFS network
+
+4. **Result**
+   - ✅ All checks pass → File saved
+   - ❌ Any check fails → File deleted, marked CORRUPTED
+
+---
+
+## Error Handling
+
+### Upload Errors
+
+```bash
+# Network failure during upload
+# CLI automatically retries chunk 3 times
+
+# Process killed/crashed
+fylix resume <transfer_id>
+```
+
+### Download Errors
+
+```bash
+# Hash mismatch
+✗ CORRUPTED: File hash mismatch!
+Expected: 7c4c312ea7a1f0a1...
+Got: cc922183ab758ffb...
+
+# Blockchain verification failed
+✗ CORRUPTED: Blockchain verification failed!
+```
+
+### Auth Errors
+
+```bash
+# Not logged in
+✗ Not logged in. Run 'fylix login <email>' first
+
+# Token expired
+# Re-run: fylix login <email>
+```
+
+---
+
+## Architecture
+
+### Technology Stack
+
+- **CLI Framework**: Typer (type-safe command handling)
+- **HTTP Client**: httpx (async REST API calls)
+- **WebSockets**: websockets (real-time coordination)
+- **Terminal UI**: rich (progress bars, tables, colors)
+- **Storage**: JSON files (credentials & transfer state)
+
+### Backend APIs Used
+
+| Endpoint | Method | Purpose |
+|----------|--------|---------|
+| `/auth/login` | POST | Authenticate user |
+| `/chat/rooms` | GET/POST | Manage chat rooms |
+| `/chat/rooms/{id}/messages` | GET | List messages (files) |
+| `/chat/rooms/{id}/files/start` | POST | Initialize upload |
+| `/chat/rooms/{id}/files/chunk` | POST | Upload chunk |
+| `/chat/rooms/{id}/files/complete` | POST | Finalize upload |
+| `/chat/files/{id}/download` | GET | Download file |
+| `/chat/api/blockchain/transaction/{hash}` | GET | Get blockchain proof |
+
+---
+
+## Development
+
+### Run without installing
+
+```bash
+cd fylix-cli
+python -m fylix --help
+```
+
+### Run specific command
+
+```bash
+python -m fylix login user@example.com
+python -m fylix status
+```
+
+### Testing
+
+1. Start backend server:
+```bash
+cd backend
+python main.py
+```
+
+2. Create test account:
+```bash
+fylix login test@example.com
+```
+
+3. Send test file:
+```bash
+echo "Test content" > test.txt
+fylix send test.txt recipient@example.com
+```
+
+4. Check inbox as recipient:
+```bash
+fylix logout
+fylix login recipient@example.com
+fylix inbox
+```
+
+---
+
+## Limitations
+
+1. **No encryption at rest** - Files stored unencrypted on backend
+2. **No P2P mode** - All transfers go through server
+3. **No daemon mode** - CLI must stay running during transfers
+4. **No GUI** - Terminal-only interface
+
+These are intentional MVP limitations. Enterprise features can be added later.
+
+---
+
+## Comparison with Backend HTML Client
+
+| Feature | HTML Client | CLI Client |
+|---------|-------------|------------|
+| Platform | Browser | macOS/Linux/Windows |
+| Use Case | Manual transfers | Automation/scripting |
+| Auto-resume | ✅ Yes | ✅ Yes |
+| Manual resume | ❌ No | ✅ Yes (after crash) |
+| Progress bar | ✅ Yes | ✅ Yes |
+| Inbox | ✅ Yes | ✅ Yes |
+| Verification | ✅ Yes | ✅ Yes |
+| Background mode | ❌ No | ❌ No (future) |
+
+---
+
+## Support
+
+For issues or questions:
+1. Check backend logs: `tail -f /tmp/fastapi.log`
+2. Check CLI debug: Run with `python -m fylix` to see errors
+3. Check state files: `cat ~/.fylix/transfers.json`
+
+---
+
+## License
+
+Proprietary - FYLIX Team © 2026
