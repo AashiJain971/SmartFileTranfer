@@ -522,8 +522,8 @@ def receive(
             
             for room in rooms:
                 try:
-                    # Increased to 100 for better coverage
-                    messages_response = await api_client.get_room_messages(room["id"], limit=100)
+                    # Increased to 200 for better coverage (matches inbox)
+                    messages_response = await api_client.get_room_messages(room["id"], limit=200)
                     for msg in messages_response.get("messages", []):
                         # Only consider file/image messages from others (not self-sent)
                         if msg["message_type"] in ["file", "image"] and msg.get("file_name") and msg["sender_id"] != current_user_id:
@@ -762,7 +762,8 @@ def verify(
             
             for room in rooms:
                 try:
-                    messages_response = await api_client.get_room_messages(room["id"], limit=20)
+                    # Increase limit to search more messages (same as inbox)
+                    messages_response = await api_client.get_room_messages(room["id"], limit=200)
                     for msg in messages_response.get("messages", []):
                         if msg["message_type"] in ["file", "image"] and msg.get("file_name"):
                             if msg["id"] == message_id or msg["id"].startswith(message_id):
