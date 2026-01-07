@@ -72,6 +72,23 @@ class FileTransferManager:
         
         console.print(f"[dim]Hash: {file_hash[:16]}...[/dim]")
         
+        # Ask user for chunk size preference (like websocket_test.html)
+        console.print(f"\n[cyan]Chunk Size Options:[/cyan]")
+        console.print("1. Auto (AI-optimized based on network conditions)")
+        console.print("2. Manual (specify size)")
+        
+        from rich.prompt import Prompt
+        choice = Prompt.ask("Select option", choices=["1", "2"], default="1")
+        
+        manual_chunk_size = None
+        if choice == "2":
+            size_input = Prompt.ask("Enter chunk size in KB", default="1024")
+            try:
+                manual_chunk_size = int(size_input) * 1024  # Convert KB to bytes
+                console.print(f"[dim]Using manual chunk size: {manual_chunk_size // 1024} KB[/dim]")
+            except:
+                console.print("[yellow]Invalid size, using auto[/yellow]")
+        
         # Check if resuming existing transfer
         if resume and transfer_id:
             transfer_state = config.get_transfer_state(transfer_id)
@@ -105,9 +122,20 @@ class FileTransferManager:
             
             # ✅ USE BACKEND'S DYNAMIC CHUNK SIZE (like websocket_test.html)
             if "chunk_size" in start_response:
-                self.chunk_size = start_response["chunk_size"]
+                backend_chunk_size = start_response["chunk_size"]
+                
+                # If manual size selected, use it; otherwise use backend's AI-optimized size
+                if manual_chunk_size:
+                    self.chunk_size = manual_chunk_size
+                    console.print(f"[dim]Using manual chunk size: {self._format_size(self.chunk_size)}[/dim]")
+                else:
+                    self.chunk_size = backend_chunk_size
+                    console.print(f"[cyan]🤖 AI Network Prediction:[/cyan]")
+                    console.print(f"[dim]Optimal chunk size: {self._format_size(self.chunk_size)}[/dim]")
+                    console.print(f"[dim]Based on current network conditions[/dim]")
+                
                 total_chunks = (file_size + self.chunk_size - 1) // self.chunk_size
-                console.print(f"[dim]Backend assigned chunk size: {self._format_size(self.chunk_size)} ({total_chunks} chunks)[/dim]")
+                console.print(f"[dim]Total chunks: {total_chunks}[/dim]")
             
             uploaded_chunks = set()
         
@@ -217,7 +245,9 @@ class FileTransferManager:
             return transfer_id
         
         except Exception as e:
+            import traceback
             console.print(f"\n[red]✗ Finalization failed: {e}[/red]")
+            console.print(f"[dim]{traceback.format_exc()}[/dim]")
             console.print("[yellow]Chunks uploaded but transfer not finalized. Contact support.[/yellow]")
             config.update_transfer_status(transfer_id, "failed", error=str(e))
             raise

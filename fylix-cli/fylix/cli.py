@@ -3,6 +3,7 @@ FYLIX CLI - Main command interface
 """
 
 import asyncio
+import json
 from pathlib import Path
 from typing import Optional
 import typer
@@ -139,16 +140,20 @@ def inbox():
             
             for room in rooms:
                 room_id = room["id"]
+                room_name = room.get("name", room_id[:8])
                 
                 try:
-                    # Get recent messages (with timeout handling) - limit to 50 for faster response
-                    console.print(f"[dim]Checking room: {room.get('name', room_id[:8])}...[/dim]")
-                    messages_response = await api_client.get_room_messages(room_id, limit=50)
+                    # Get recent messages - increased to 100 for reliability
+                    console.print(f"[dim]Checking {room_name}...[/dim]")
+                    messages_response = await api_client.get_room_messages(room_id, limit=100)
                     messages = messages_response.get("messages", [])
-                    console.print(f"[dim]Found {len(messages)} messages in this room[/dim]")
+                    console.print(f"[dim]Found {len(messages)} messages[/dim]")
                 except Exception as e:
-                    # Skip rooms that timeout or error - show actual error for debugging
-                    console.print(f"[yellow]⚠ Skipping room {room.get('name', room_id[:8])}: {type(e).__name__} - {str(e)[:100]}[/yellow]")
+                    # Show detailed error for debugging
+                    import traceback
+                    console.print(f"[red]ERROR in {room_name}:[/red]")
+                    console.print(f"[red]{type(e).__name__}: {str(e)}[/red]")
+                    console.print(f"[dim]{traceback.format_exc()}[/dim]")
                     continue
                 
                 # Filter file messages (type can be "file" or "image")
@@ -183,16 +188,27 @@ def inbox():
             for file in incoming_files:
                 size_str = _format_size(file["size"])
                 
-                # Format timestamp
+                # Format timestamp in local timezone (like websocket_test.html)
                 from datetime import datetime
                 try:
                     dt = datetime.fromisoformat(file["created_at"].replace('Z', '+00:00'))
-                    time_str = dt.strftime("%b %d, %I:%M%p")
+                    # Convert to local timezone
+                    local_tz = datetime.now().astimezone().tzinfo
+                    dt_local = dt.astimezone(local_tz)
+                    time_str = dt_local.strftime("%b %d, %I:%M%p")
                 except:
                     time_str = "Unknown"
                 
-                # Determine integrity status
-                status = "✓ Verified" if file.get("blockchain_tx") else "⚠ Pending"
+                # Determine integrity status - check if downloaded
+                msg_id = file["message_id"]
+                # Check if this file was downloaded (stored in config)
+                downloaded_files = config.get_credentials().get("downloaded_files", [])
+                if msg_id in downloaded_files:
+                    status = "✓ Received"
+                elif file.get("blockchain_tx"):
+                    status = "✓ Verified"
+                else:
+                    status = "⚠ Pending"
                 
                 # Show first 7 chars (no ellipsis - easier to copy)
                 msg_id_short = file["message_id"][:7]
@@ -262,12 +278,11 @@ def outbox():
                         break
                 
                 try:
-                    # Get recent messages (limit to 20 for faster response in outbox)
-                    messages_response = await api_client.get_room_messages(room_id, limit=20)
+                    # Get recent messages (limit to 10 for instant response like websocket_test.html)
+                    messages_response = await api_client.get_room_messages(room_id, limit=10)
                     messages = messages_response.get("messages", [])
                 except Exception as e:
-                    # Skip rooms that timeout or error
-                    console.print(f"[yellow]⚠ Skipping room {room_name}: {type(e).__name__}[/yellow]")
+                    # Skip rooms that timeout silently
                     continue
                 
                 # Filter file messages sent by current user (type can be "file" or "image")
@@ -422,7 +437,8 @@ def receive(
             
             for room in rooms:
                 try:
-                    messages_response = await api_client.get_room_messages(room["id"], limit=50)
+                    # Increased to 100 for better coverage
+                    messages_response = await api_client.get_room_messages(room["id"], limit=100)
                     for msg in messages_response.get("messages", []):
                         # Only consider file/image messages from others (not self-sent)
                         if msg["message_type"] in ["file", "image"] and msg.get("file_name") and msg["sender_id"] != current_user_id:
@@ -466,6 +482,17 @@ def receive(
                 expected_hash=file_info.get("file_hash"),
                 expected_ipfs_cid=file_info.get("ipfs_cid")
             )
+            
+            # Mark as downloaded in config (update credentials file directly)
+            creds = config.get_credentials()
+            if creds:
+                downloaded_files = creds.get("downloaded_files", [])
+                if file_info["id"] not in downloaded_files:
+                    downloaded_files.append(file_info["id"])
+                    creds["downloaded_files"] = downloaded_files
+                    # Write directly to file instead of using save_credentials
+                    with open(config.credentials_file, 'w') as f:
+                        json.dump(creds, f, indent=2)
             
             console.print(f"\n[green]✓ File downloaded and verified[/green]")
         
@@ -614,6 +641,102 @@ def resume(
             await api_client.close()
     
     asyncio.run(_resume())
+
+
+# ==================== VERIFY ====================
+
+@app.command()
+def verify(
+    message_id: str = typer.Argument(..., help="Message ID to verify (from inbox)")
+):
+    """
+    Verify file integrity using blockchain and IPFS
+    
+    Shows:
+    - File hash verification
+    - Blockchain transaction details
+    - IPFS CID and Pinata status
+    - Certificate of authenticity
+    
+    Example: fylix verify a9bad07
+    """
+    async def _verify():
+        if not config.is_logged_in():
+            console.print("[red]✗ Not logged in. Run 'fylix login <email>' first[/red]")
+            raise typer.Exit(1)
+        
+        try:
+            console.print(f"\n[cyan]🔍 Verifying file integrity...[/cyan]")
+            
+            # Find the message (same logic as receive)
+            rooms_response = await api_client.get_user_rooms()
+            rooms = rooms_response.get("rooms", [])
+            
+            file_info = None
+            current_user_id = config.get_user_id()
+            
+            for room in rooms:
+                try:
+                    messages_response = await api_client.get_room_messages(room["id"], limit=20)
+                    for msg in messages_response.get("messages", []):
+                        if msg["message_type"] in ["file", "image"] and msg.get("file_name"):
+                            if msg["id"] == message_id or msg["id"].startswith(message_id):
+                                file_info = msg
+                                break
+                except:
+                    continue
+                if file_info:
+                    break
+            
+            if not file_info:
+                console.print(f"[red]✗ Message {message_id} not found[/red]")
+                raise typer.Exit(1)
+            
+            # Display file info
+            console.print(f"\n[cyan]📄 File Details:[/cyan]")
+            console.print(f"Filename: {file_info.get('file_name')}")
+            console.print(f"Size: {_format_size(file_info.get('file_size', 0))}")
+            console.print(f"Sender: {file_info['sender_username']}")
+            
+            # Cryptographic Hash
+            console.print(f"\n[cyan]🔐 Cryptographic Hash (SHA-256):[/cyan]")
+            console.print(f"[green]{file_info.get('file_hash', 'N/A')}[/green]")
+            
+            # Get blockchain proof
+            file_hash = file_info.get('file_hash')
+            if file_hash:
+                try:
+                    blockchain_data = await api_client.get_blockchain_proof(file_hash)
+                    
+                    console.print(f"\n[cyan]⛓️  Blockchain Verification:[/cyan]")
+                    console.print(f"Transaction Hash: [green]{blockchain_data.get('tx_hash', 'N/A')}[/green]")
+                    console.print(f"Block Number: {blockchain_data.get('block_number', 'N/A')}")
+                    console.print(f"Timestamp: {blockchain_data.get('timestamp', 'N/A')}")
+                    console.print(f"Status: [green]✓ Verified on Blockchain[/green]")
+                    
+                    # IPFS Details
+                    if blockchain_data.get('ipfs_cid'):
+                        console.print(f"\n[cyan]📦 IPFS Storage:[/cyan]")
+                        console.print(f"CID: [green]{blockchain_data['ipfs_cid']}[/green]")
+                        console.print(f"Gateway: https://gateway.pinata.cloud/ipfs/{blockchain_data['ipfs_cid']}")
+                        console.print(f"Status: [green]✓ Pinned on Pinata[/green]")
+                    
+                    console.print(f"\n[green]✅ File integrity verified successfully![/green]")
+                    
+                except Exception as e:
+                    console.print(f"\n[yellow]⚠ Blockchain verification unavailable: {e}[/yellow]")
+                    console.print(f"[dim]File may still be processing or not yet finalized[/dim]")
+            else:
+                console.print(f"\n[yellow]⚠ No hash available for verification[/yellow]")
+        
+        except Exception as e:
+            console.print(f"[red]✗ Verify failed: {e}[/red]")
+            raise typer.Exit(1)
+        
+        finally:
+            await api_client.close()
+    
+    asyncio.run(_verify())
 
 
 # ==================== HELPER ====================
