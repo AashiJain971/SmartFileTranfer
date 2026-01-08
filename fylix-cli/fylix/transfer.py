@@ -341,13 +341,29 @@ class FileTransferManager:
         console.print(f"[dim]File Hash: {actual_hash[:16]}...[/dim]")
         
         # 2. Get blockchain proof
+        blockchain_hash = None
+        blockchain_ipfs = None
         try:
             blockchain_proof = await api_client.get_blockchain_proof(actual_hash)
             blockchain_hash = blockchain_proof.get("file_hash")
             blockchain_ipfs = blockchain_proof.get("ipfs_cid")
             
             console.print(f"[dim]Blockchain Hash: {blockchain_hash[:16] if blockchain_hash else 'N/A'}...[/dim]")
-            console.print(f"[dim]IPFS CID: {blockchain_ipfs or 'N/A'}[/dim]")
+            
+            if blockchain_ipfs:
+                console.print(f"[dim]IPFS CID: {blockchain_ipfs}[/dim]")
+                console.print(f"[cyan]📎 Pinata: https://gateway.pinata.cloud/ipfs/{blockchain_ipfs}[/cyan]")
+            else:
+                console.print(f"[dim]IPFS CID: N/A[/dim]")
+        except Exception as e:
+            # Old files don't have blockchain records - that's OK
+            if "404" in str(e) or "Not Found" in str(e):
+                console.print(f"[yellow]⚠ No blockchain record (old file)[/yellow]")
+                console.print(f"[dim]Blockchain Hash: N/A[/dim]")
+                console.print(f"[dim]IPFS CID: N/A[/dim]")
+            else:
+                # Other errors should be shown
+                console.print(f"[yellow]⚠ Blockchain verification unavailable: {e}[/yellow]")
             
             # 3. Verify hash match
             if expected_hash and actual_hash != expected_hash:

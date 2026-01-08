@@ -13,8 +13,8 @@ class APIClient:
     
     def __init__(self, base_url: str = "http://localhost:8000"):
         self.base_url = base_url
-        # Use 60s timeout - balance between speed and reliability
-        self.client = httpx.AsyncClient(timeout=60.0)
+        # Use 120s timeout for slow database queries (Supabase can be slow)
+        self.client = httpx.AsyncClient(timeout=120.0)
     
     def _get_headers(self) -> Dict[str, str]:
         """Get headers with authorization token"""

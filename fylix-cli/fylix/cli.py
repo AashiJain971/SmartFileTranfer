@@ -350,11 +350,12 @@ def inbox(range: str = typer.Argument("1-10", help="Message range (e.g., 1-10, m
                     messages = messages_response.get("messages", [])
                     console.print(f"[dim]Found {len(messages)} total messages in room[/dim]")
                 except Exception as e:
-                    # Show detailed error for debugging
-                    import traceback
-                    console.print(f"[red]ERROR in {room_name}:[/red]")
-                    console.print(f"[red]{type(e).__name__}: {str(e)}[/red]")
-                    console.print(f"[dim]{traceback.format_exc()}[/dim]")
+                    # Handle timeouts and errors gracefully - skip this room
+                    error_type = type(e).__name__
+                    if "Timeout" in error_type or "timeout" in str(e).lower():
+                        console.print(f"[yellow]⚠ Skipping {room_name} (database timeout)[/yellow]")
+                    else:
+                        console.print(f"[yellow]⚠ Skipping {room_name} ({error_type})[/yellow]")
                     continue
                 
                 # Filter file messages (type can be "file" or "image")
@@ -370,7 +371,10 @@ def inbox(range: str = typer.Argument("1-10", help="Message range (e.g., 1-10, m
                                 "file_hash": msg.get("file_hash"),
                                 "ipfs_cid": msg.get("ipfs_cid"),
                                 "blockchain_tx": msg.get("blockchain_tx_hash"),
-                                "created_at": msg["created_at"]
+                                "created_at": msg["created_at"],
+                                "room_name": room_name,
+                                "room_type": room.get("type", "unknown"),
+                                "room_id": room_id
                             })
             
             if not incoming_files:
@@ -399,10 +403,11 @@ def inbox(range: str = typer.Argument("1-10", help="Message range (e.g., 1-10, m
             table.add_column("Sender", style="cyan")
             table.add_column("Filename", style="white")
             table.add_column("Size", style="green")
+            table.add_column("Room", style="blue")  # Add room type/name
             table.add_column("Time", style="magenta")
             table.add_column("Status", style="yellow")
-            table.add_column("ID (7 chars)", style="bright_blue")  # Make it easier to copy
-            table.add_column("#", style="dim")  # Message number
+            table.add_column("ID (7 chars)", style="bright_blue")
+            table.add_column("#", style="dim")
             
             for idx, file in enumerate(paginated_files, start=start):
                 size_str = _format_size(file["size"])
@@ -432,10 +437,16 @@ def inbox(range: str = typer.Argument("1-10", help="Message range (e.g., 1-10, m
                 # Show first 7 chars (no ellipsis - easier to copy)
                 msg_id_short = file["message_id"][:7]
                 
+                # Format room info
+                room_type = file.get("room_type", "unknown")[:1].upper()  # G for group, D for direct
+                room_name_short = file.get("room_name", "?")[:10]  # First 10 chars
+                room_info = f"{room_type}:{room_name_short}"
+                
                 table.add_row(
                     file["sender"],
                     file["filename"],
                     size_str,
+                    room_info,
                     time_str,
                     status,
                     msg_id_short,
@@ -456,9 +467,15 @@ def inbox(range: str = typer.Argument("1-10", help="Message range (e.g., 1-10, m
                 console.print(f"[dim]Example: fylix receive {paginated_files[0]['message_id'][:7]} or fylix verify {paginated_files[0]['message_id'][:7]}[/dim]")
         
         except Exception as e:
-            import traceback
-            console.print(f"[red]✗ Failed to fetch inbox: {e}[/red]")
-            console.print(f"[dim]{traceback.format_exc()}[/dim]")
+            # Check if it's an authentication error
+            if "401" in str(e) or "Unauthorized" in str(e):
+                console.print("[red]✗ Token expired. Please login again:[/red]")
+                console.print(f"[cyan]fylix login {config.get_credentials().get('email', '<email>')}[/cyan]")
+            elif "Connection" in str(e) or "connection" in str(e):
+                console.print("[red]✗ Cannot connect to server. Is the backend running?[/red]")
+                console.print("[dim]Start backend: cd backend && python main.py[/dim]")
+            else:
+                console.print(f"[red]✗ Failed to fetch inbox: {e}[/red]")
             raise typer.Exit(1)
         
         finally:
@@ -616,9 +633,15 @@ def outbox(range: str = typer.Argument("1-10", help="Message range (e.g., 1-10, 
             console.print(f"[dim]Files are available for recipient to download[/dim]")
         
         except Exception as e:
-            import traceback
-            console.print(f"[red]✗ Failed to fetch outbox: {e}[/red]")
-            console.print(f"[dim]{traceback.format_exc()}[/dim]")
+            # Check if it's an authentication error
+            if "401" in str(e) or "Unauthorized" in str(e):
+                console.print("[red]✗ Token expired. Please login again:[/red]")
+                console.print(f"[cyan]fylix login {config.get_credentials().get('email', '<email>')}[/cyan]")
+            elif "Connection" in str(e) or "connection" in str(e):
+                console.print("[red]✗ Cannot connect to server. Is the backend running?[/red]")
+                console.print("[dim]Start backend: cd backend && python main.py[/dim]")
+            else:
+                console.print(f"[red]✗ Failed to fetch outbox: {e}[/red]")
             raise typer.Exit(1)
         
         finally:
@@ -707,9 +730,15 @@ def rooms():
             console.print("\n[yellow]Note:[/yellow] Direct rooms auto-create when you send files via email")
         
         except Exception as e:
-            import traceback
-            console.print(f"[red]✗ Failed to fetch rooms: {e}[/red]")
-            console.print(f"[dim]{traceback.format_exc()}[/dim]")
+            # Check if it's an authentication error
+            if "401" in str(e) or "Unauthorized" in str(e):
+                console.print("[red]✗ Token expired. Please login again:[/red]")
+                console.print(f"[cyan]fylix login {config.get_credentials().get('email', '<email>')}[/cyan]")
+            elif "Connection" in str(e) or "connection" in str(e):
+                console.print("[red]✗ Cannot connect to server. Is the backend running?[/red]")
+                console.print("[dim]Start backend: cd backend && python main.py[/dim]")
+            else:
+                console.print(f"[red]✗ Failed to fetch rooms: {e}[/red]")
             raise typer.Exit(1)
         
         finally:
@@ -801,11 +830,16 @@ def members(
             # Get detailed room info
             room_details = await api_client.get_room_details(matching_room["id"])
             
-            room_name = room_details.get("name", "Unknown")
+            # API returns {"room": {...}, "members": [...]}
+            room_data = room_details.get("room", {})
             members_list = room_details.get("members", [])
             
+            room_name = room_data.get("name", "Unknown")
+            room_type = room_data.get("type", "unknown")
+            
             console.print(f"\n[cyan]Room: {room_name}[/cyan]")
-            console.print(f"Type: {room_details.get('type', 'unknown').upper()}")
+            console.print(f"[cyan]Type: {room_type.upper()}[/cyan]")
+            console.print(f"[cyan]ID: {matching_room['id']}[/cyan]")
             console.print(f"Total Members: {len(members_list)}")
             
             # Display members table
@@ -840,9 +874,15 @@ def members(
                 console.print(f"[dim]Delete:     fylix delroom {matching_room['id'][:7]} (admin only)[/dim]")
         
         except Exception as e:
-            import traceback
-            console.print(f"[red]✗ Failed to fetch members: {e}[/red]")
-            console.print(f"[dim]{traceback.format_exc()}[/dim]")
+            # Check if it's an authentication error
+            if "401" in str(e) or "Unauthorized" in str(e):
+                console.print("[red]✗ Token expired. Please login again:[/red]")
+                console.print(f"[cyan]fylix login {config.get_credentials().get('email', '<email>')}[/cyan]")
+            elif "Connection" in str(e) or "connection" in str(e):
+                console.print("[red]✗ Cannot connect to server. Is the backend running?[/red]")
+                console.print("[dim]Start backend: cd backend && python main.py[/dim]")
+            else:
+                console.print(f"[red]✗ Failed to fetch members: {e}[/red]")
             raise typer.Exit(1)
         
         finally:
@@ -1089,12 +1129,108 @@ def sendroom(
             console.print(f"File: {file.name}")
             console.print(f"Size: {_format_size(file.stat().st_size)}")
             
-            # Use existing transfer manager with room_id directly
+            # Use room-specific chunked upload
             from fylix.transfer import transfer_manager
-            await transfer_manager.send_file(
-                file_path=str(file),
-                room_id=matching_room["id"]  # Use full room ID
+            
+            # Calculate file hash
+            from rich.progress import Progress, SpinnerColumn, TextColumn
+            with Progress(
+                SpinnerColumn(),
+                TextColumn("[progress.description]{task.description}"),
+                transient=True
+            ) as progress:
+                task = progress.add_task("Calculating file hash...", total=None)
+                file_hash = transfer_manager.calculate_file_hash(file)
+                progress.update(task, completed=True)
+            
+            file_size = file.stat().st_size
+            chunk_size = 1024 * 1024  # 1MB chunks
+            total_chunks = (file_size + chunk_size - 1) // chunk_size
+            
+            console.print(f"\n[cyan]Starting chunked upload...[/cyan]")
+            console.print(f"[dim]Chunks: {total_chunks}, Hash: {file_hash[:16]}...[/dim]")
+            
+            # Start upload
+            start_response = await api_client.start_file_upload(
+                room_id=matching_room["id"],
+                filename=file.name,
+                file_size=file_size,
+                file_hash=file_hash,
+                total_chunks=total_chunks
             )
+            
+            file_id = start_response["file_id"]
+            console.print(f"[dim]File ID: {file_id}[/dim]")
+            
+            # Upload chunks with progress bar
+            from rich.progress import Progress, BarColumn, TaskProgressColumn, TransferSpeedColumn, TimeRemainingColumn
+            import hashlib
+            
+            with Progress(
+                TextColumn("[bold blue]{task.fields[filename]}", justify="right"),
+                BarColumn(bar_width=None),
+                "[progress.percentage]{task.percentage:>3.1f}%",
+                "•",
+                TransferSpeedColumn(),
+                "•",
+                TimeRemainingColumn(),
+            ) as progress:
+                task_id = progress.add_task(
+                    "upload",
+                    filename=file.name,
+                    total=file_size
+                )
+                
+                with open(file, 'rb') as f:
+                    for chunk_num in range(total_chunks):
+                        chunk_data = f.read(chunk_size)
+                        chunk_hash = hashlib.sha256(chunk_data).hexdigest()
+                        
+                        await api_client.upload_chunk(
+                            room_id=matching_room["id"],
+                            file_id=file_id,
+                            chunk_number=chunk_num,
+                            total_chunks=total_chunks,
+                            chunk_data=chunk_data,
+                            chunk_hash=chunk_hash
+                        )
+                        
+                        progress.update(task_id, advance=len(chunk_data))
+            
+            # Complete upload
+            console.print("\n[cyan]Finalizing upload...[/cyan]")
+            complete_response = await api_client.complete_upload(
+                room_id=matching_room["id"],
+                file_id=file_id,
+                file_hash=file_hash
+            )
+            
+            console.print(f"\n[green]✓ File sent successfully![/green]")
+            
+            # Parse response structure
+            message_id = complete_response.get('message_id')
+            blockchain_data = complete_response.get('blockchain', {})
+            ipfs_data = complete_response.get('ipfs', {})
+            
+            if message_id:
+                console.print(f"[dim]Message ID: {message_id}[/dim]")
+            
+            # Show blockchain and IPFS info if available
+            if ipfs_data and ipfs_data.get('success'):
+                console.print(f"\n[cyan]🔗 IPFS & Blockchain Proof:[/cyan]")
+                console.print(f"[green]IPFS CID:[/green] {ipfs_data.get('cid', 'N/A')}")
+                console.print(f"[dim]Pinata: https://gateway.pinata.cloud/ipfs/{ipfs_data.get('cid', '')}[/dim]")
+            elif ipfs_data and ipfs_data.get('processing'):
+                console.print(f"\n[yellow]⏳ IPFS upload processing in background...[/yellow]")
+                
+            if blockchain_data and blockchain_data.get('success'):
+                console.print(f"[green]Blockchain TX:[/green] {blockchain_data.get('transaction_hash', 'N/A')}")
+                console.print(f"[green]File Hash (SHA-256):[/green] {file_hash}")
+                console.print(f"\n[yellow]✓ File is now immutably recorded on blockchain![/yellow]")
+            elif blockchain_data and blockchain_data.get('processing'):
+                console.print(f"[yellow]⏳ Blockchain verification processing in background...[/yellow]")
+            else:
+                console.print(f"\n[yellow]⚠ Blockchain verification pending (processing in background)[/yellow]")
         
         except Exception as e:
             console.print(f"[red]✗ Failed to send file: {e}[/red]")

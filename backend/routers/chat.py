@@ -406,8 +406,15 @@ async def get_room_messages(
             raise HTTPException(status_code=403, detail="Not a member of this room")
         
         print(f"🔧 DEBUG: Fetching messages from CRUD...")
-        messages_data = await ChatCRUD.get_room_messages(room_id, limit, offset)
-        print(f"🔧 DEBUG: Retrieved {len(messages_data)} messages from database")
+        try:
+            messages_data = await ChatCRUD.get_room_messages(room_id, limit, offset)
+            print(f"🔧 DEBUG: Retrieved {len(messages_data)} messages from database")
+        except asyncio.TimeoutError:
+            print(f"⏱️ Database timeout for room {room_id[:8]}... - returning 504")
+            raise HTTPException(
+                status_code=504,
+                detail="Database query timed out. The room may have too many messages. Please try again."
+            )
         
         messages = []
         for msg in messages_data:

@@ -622,8 +622,8 @@ class ChatCRUD:
                     .execute()
                 return result
             
-            # 3 second timeout
-            result = await asyncio.wait_for(fetch_messages(), timeout=3.0)
+            # 30 second timeout for large message history
+            result = await asyncio.wait_for(fetch_messages(), timeout=30.0)
             
             messages = []
             for msg in result.data:
@@ -647,24 +647,33 @@ class ChatCRUD:
             await cache.set(cache_key, messages, ttl=30)
             
             return messages
+        except asyncio.TimeoutError:
+            print(f"❌ Timeout getting room messages for room {room_id[:8]}...")
+            raise  # Propagate timeout to router
         except Exception as e:
             print(f"❌ Error getting room messages: {e}")
-            return []
+            raise  # Propagate errors to router
     
     @staticmethod
     async def get_message_by_id(message_id: str) -> Optional[Dict[str, Any]]:
-        """Get a specific message by ID"""
+        """Get a specific message by ID with timeout"""
         try:
-            result = supabase.table("messages")\
-                .select("*, sender:users!sender_id(username)")\
-                .eq("id", message_id)\
-                .single()\
-                .execute()
+            async def fetch_message():
+                return supabase.table("messages")\
+                    .select("*, sender:users!sender_id(username)")\
+                    .eq("id", message_id)\
+                    .single()\
+                    .execute()
+            
+            result = await asyncio.wait_for(fetch_message(), timeout=10.0)
             
             if result.data:
                 message = result.data
                 message["sender_username"] = message["sender"]["username"] if message.get("sender") else "Unknown"
                 return message
+            return None
+        except asyncio.TimeoutError:
+            print(f"🔧 ERROR: get_message_by_id timeout for {message_id[:8]}...")
             return None
         except Exception as e:
             print(f"🔧 ERROR: get_message_by_id failed: {e}")
