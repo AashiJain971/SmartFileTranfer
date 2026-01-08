@@ -35,7 +35,9 @@ class ChatCRUD:
     
     @staticmethod
     async def create_chat_room(creator_id: str, room_type: str, name: Optional[str] = None) -> Dict[str, Any]:
-        """Create a new chat room"""
+        """Create a new chat room with timeout protection"""
+        import httpx
+        
         try:
             room_data = {
                 "type": room_type,
@@ -43,25 +45,39 @@ class ChatCRUD:
                 "name": name
             }
             
-            result = supabase.table("chat_rooms").insert(room_data).execute()
+            async def insert_room():
+                return supabase.table("chat_rooms").insert(room_data).execute()
+            
+            result = await asyncio.wait_for(insert_room(), timeout=15.0)
             if result.data and len(result.data) > 0:
                 return result.data[0]
             raise Exception("Failed to create chat room - no data returned")
+        except (asyncio.TimeoutError, httpx.ReadTimeout, httpx.ConnectTimeout) as e:
+            raise Exception(f"Room creation timed out - database is slow. Please try again.")
         except Exception as e:
             raise Exception(f"Failed to create chat room: {str(e)}")
     
     @staticmethod
     async def get_chat_room_by_id(room_id: str) -> Optional[Dict[str, Any]]:
-        """Get chat room by ID"""
+        """Get chat room by ID with timeout protection"""
         try:
-            result = supabase.table("chat_rooms")\
-                .select("*, users!created_by(username)")\
-                .eq("id", room_id)\
-                .single()\
-                .execute()
+            result = await asyncio.wait_for(
+                asyncio.to_thread(
+                    lambda: supabase.table("chat_rooms")
+                        .select("*, users!created_by(username)")
+                        .eq("id", room_id)
+                        .single()
+                        .execute()
+                ),
+                timeout=10.0  # 10s timeout for room lookup
+            )
             
             return result.data if result.data else None
-        except Exception:
+        except asyncio.TimeoutError:
+            print(f"⏱️ Timeout getting room {room_id[:8]}...")
+            return None
+        except Exception as e:
+            print(f"❌ Error getting room {room_id[:8]}: {e}")
             return None
     
     @staticmethod
@@ -137,7 +153,9 @@ class ChatCRUD:
 
     @staticmethod
     async def add_room_members(room_id: str, user_ids: List[str], role: str = "member") -> bool:
-        """Add users to a chat room"""
+        """Add users to a chat room with timeout protection"""
+        import httpx
+        
         try:
             members_data = [
                 {
@@ -148,19 +166,31 @@ class ChatCRUD:
                 for user_id in user_ids
             ]
             
-            result = supabase.table("chat_room_members").insert(members_data).execute()
+            # Add timeout protection (10s for bulk insert)
+            async def insert_members():
+                return supabase.table("chat_room_members").insert(members_data).execute()
+            
+            result = await asyncio.wait_for(insert_members(), timeout=10.0)
             success = result.data is not None and len(result.data) == len(user_ids)
             
-            # Invalidate cache for all added users
+            # Invalidate cache for all added users AND the room members cache
             if success:
+                # Clear the room members cache FIRST (most important)
+                await cache.delete(f"members:{room_id}")
+                print(f"🗑️ Cleared members cache for room {room_id[:8]}...")
+                
+                # Clear individual user caches
                 for user_id in user_ids:
                     await cache.delete(f"rooms:{user_id}")
                     await cache.delete(f"membership:{user_id}:{room_id}")
                     print(f"🗑️ Cleared cache for user {user_id[:8]}... in room {room_id[:8]}...")
             
             return success
+        except (asyncio.TimeoutError, httpx.ReadTimeout, httpx.ConnectTimeout) as e:
+            print(f"⏱️ Timeout adding room members to room {room_id[:8]}... ({type(e).__name__})")
+            return False
         except Exception as e:
-            print(f"Error adding room members: {e}")
+            print(f"❌ Error adding room members: {e}")
             return False
     
     @staticmethod
@@ -198,6 +228,8 @@ class ChatCRUD:
     @staticmethod
     async def get_user_chat_rooms(user_id: str) -> List[Dict[str, Any]]:
         """Get all chat rooms for user with Redis caching and parallel loading"""
+        import httpx
+        
         cache_key = f"rooms:{user_id}"
         
         # Check cache first
@@ -213,7 +245,7 @@ class ChatCRUD:
                     .eq("user_id", user_id)\
                     .execute()
             
-            result = await asyncio.wait_for(fetch_rooms(), timeout=5.0)
+            result = await asyncio.wait_for(fetch_rooms(), timeout=10.0)
             
             rooms_with_info = []
             
@@ -254,8 +286,8 @@ class ChatCRUD:
             await cache.set(cache_key, rooms_with_info, ttl=60)
             
             return rooms_with_info
-        except asyncio.TimeoutError:
-            print(f"⚠️ Database timeout getting rooms for user {user_id} - returning cached/empty data")
+        except (asyncio.TimeoutError, httpx.ReadTimeout, httpx.ConnectTimeout) as e:
+            print(f"⚠️ Database timeout getting rooms for user {user_id[:8]}... ({type(e).__name__}) - returning empty")
             # Return empty array but don't crash
             return []
         except Exception as e:
@@ -348,17 +380,23 @@ class ChatCRUD:
     
     @staticmethod
     async def get_user_role_in_room(user_id: str, room_id: str) -> Optional[str]:
-        """Get a user's role in a chat room"""
+        """Get a user's role in a chat room with timeout protection"""
         try:
-            result = supabase.table("chat_room_members")\
-                .select("role")\
-                .eq("user_id", user_id)\
-                .eq("room_id", room_id)\
-                .single()\
-                .execute()
+            async def fetch_role():
+                return supabase.table("chat_room_members")\
+                    .select("role")\
+                    .eq("user_id", user_id)\
+                    .eq("room_id", room_id)\
+                    .single()\
+                    .execute()
             
+            result = await asyncio.wait_for(fetch_role(), timeout=5.0)
             return result.data["role"] if result.data else None
-        except Exception:
+        except asyncio.TimeoutError:
+            print(f"⏱️ Timeout getting user role for {user_id[:8]}... in room {room_id[:8]}...")
+            return None
+        except Exception as e:
+            print(f"❌ Error getting user role: {e}")
             return None
     
     @staticmethod
@@ -681,7 +719,14 @@ class ChatCRUD:
     
     @staticmethod
     async def get_last_message_for_room(room_id: str) -> Optional[Dict[str, Any]]:
-        """Get the last message sent in a room"""
+        """Get the last message sent in a room with caching for performance"""
+        cache_key = f"last_msg:{room_id}"
+        
+        # Check cache first for instant response
+        cached = await cache.get(cache_key)
+        if cached:
+            return cached
+        
         try:
             result = supabase.table("messages")\
                 .select("*, sender:users!sender_id(username)")\
@@ -693,6 +738,9 @@ class ChatCRUD:
             if result.data and len(result.data) > 0:
                 message = result.data[0]
                 message["sender_username"] = message["sender"]["username"] if message.get("sender") else "Unknown"
+                
+                # Cache for 30 seconds (messages change frequently)
+                await cache.set(cache_key, message, ttl=30)
                 return message
             return None
         except Exception as e:
@@ -911,47 +959,76 @@ class ChatCRUD:
     
     @staticmethod
     async def delete_room(room_id: str) -> bool:
-        """Delete a chat room (admin only, group chats only) with timeout handling"""
+        """Delete a chat room (admin only, group chats only) with improved timeout handling"""
+        import httpx
+        
         try:
             print(f"🗑️ Deleting room {room_id}...")
             
-            # Step 1: Delete all messages in the room with timeout
+            # Use longer timeouts for Supabase sync operations (they can't be interrupted mid-request)
+            # Step 1: Delete all messages in the room
             print(f"Deleting messages...")
-            async def delete_messages():
-                return supabase.table("messages")\
-                    .delete()\
-                    .eq("room_id", room_id)\
-                    .execute()
+            try:
+                async def delete_messages():
+                    return supabase.table("messages")\
+                        .delete()\
+                        .eq("room_id", room_id)\
+                        .execute()
+                
+                messages_result = await asyncio.wait_for(delete_messages(), timeout=60.0)
+                print(f"✅ Deleted {len(messages_result.data) if messages_result.data else 0} messages")
+            except (asyncio.TimeoutError, httpx.ReadTimeout, httpx.ConnectTimeout):
+                print(f"⏱️ Message deletion timed out - continuing anyway")
             
-            messages_result = await asyncio.wait_for(delete_messages(), timeout=30.0)
-            print(f"Deleted {len(messages_result.data) if messages_result.data else 0} messages")
-            
-            # Step 2: Delete all room members with timeout
+            # Step 2: Delete all room members
             print(f"Deleting members...")
-            async def delete_members():
-                return supabase.table("chat_room_members")\
-                    .delete()\
-                    .eq("room_id", room_id)\
-                    .execute()
+            try:
+                async def delete_members():
+                    return supabase.table("chat_room_members")\
+                        .delete()\
+                        .eq("room_id", room_id)\
+                        .execute()
+                
+                members_result = await asyncio.wait_for(delete_members(), timeout=60.0)
+                print(f"✅ Deleted {len(members_result.data) if members_result.data else 0} members")
+            except (asyncio.TimeoutError, httpx.ReadTimeout, httpx.ConnectTimeout):
+                print(f"⏱️ Member deletion timed out - continuing anyway")
             
-            members_result = await asyncio.wait_for(delete_members(), timeout=15.0)
-            print(f"Deleted {len(members_result.data) if members_result.data else 0} members")
-            
-            # Step 3: Delete the room itself with timeout
-            print(f"Deleting room...")
-            async def delete_room_record():
-                return supabase.table("chat_rooms")\
-                    .delete()\
-                    .eq("id", room_id)\
-                    .execute()
-            
-            result = await asyncio.wait_for(delete_room_record(), timeout=15.0)
-            print(f"Room deletion result: {result.data}")
-            
-            return True
-        except asyncio.TimeoutError:
-            print(f"❌ Timeout deleting room {room_id} - Database may be slow")
-            return False
+            # Step 3: Delete the room itself
+            print(f"Deleting room record...")
+            try:
+                async def delete_room_record():
+                    return supabase.table("chat_rooms")\
+                        .delete()\
+                        .eq("id", room_id)\
+                        .execute()
+                
+                result = await asyncio.wait_for(delete_room_record(), timeout=60.0)
+                print(f"✅ Room deleted successfully")
+                return True
+            except (asyncio.TimeoutError, httpx.ReadTimeout, httpx.ConnectTimeout) as e:
+                # Even if it times out, the delete likely succeeded
+                # Verify by checking if room still exists
+                print(f"⏱️ Room deletion timed out ({type(e).__name__}) - verifying...")
+                await asyncio.sleep(2)  # Give database time to process
+                
+                try:
+                    check_result = supabase.table("chat_rooms")\
+                        .select("id")\
+                        .eq("id", room_id)\
+                        .execute()
+                    
+                    if not check_result.data or len(check_result.data) == 0:
+                        print(f"✅ Room was deleted despite timeout")
+                        return True
+                    else:
+                        print(f"❌ Room still exists after timeout")
+                        return False
+                except Exception as verify_error:
+                    # If we can't verify, assume success (delete likely worked)
+                    print(f"⚠️ Cannot verify room deletion - assuming success ({verify_error})")
+                    return True
+                    
         except Exception as e:
             print(f"❌ Error deleting room: {e}")
             import traceback

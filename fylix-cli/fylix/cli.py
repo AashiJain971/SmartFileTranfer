@@ -344,9 +344,9 @@ def inbox(range: str = typer.Argument("1-10", help="Message range (e.g., 1-10, m
                 room_name = room.get("name", room_id[:8])
                 
                 try:
-                    # Get messages (limit 200 to allow pagination without too much load)
+                    # Get messages (limit 50 for faster loading - demo optimized)
                     console.print(f"[dim]Checking {room_name}...[/dim]")
-                    messages_response = await api_client.get_room_messages(room_id, limit=200)
+                    messages_response = await api_client.get_room_messages(room_id, limit=50)
                     messages = messages_response.get("messages", [])
                     console.print(f"[dim]Found {len(messages)} total messages in room[/dim]")
                 except Exception as e:
@@ -1326,8 +1326,8 @@ def receive(
                     # Increased to 200 for better coverage (matches inbox)
                     messages_response = await api_client.get_room_messages(room["id"], limit=200)
                     for msg in messages_response.get("messages", []):
-                        # Only consider file/image messages from others (not self-sent)
-                        if msg["message_type"] in ["file", "image"] and msg.get("file_name") and msg["sender_id"] != current_user_id:
+                        # Consider file/image messages (can be from self in group chats or from others)
+                        if msg["message_type"] in ["file", "image"] and msg.get("file_name"):
                             # Support full or partial message ID match
                             if msg["id"] == message_id or msg["id"].startswith(message_id):
                                 file_info = msg

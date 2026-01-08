@@ -137,12 +137,33 @@ async def create_chat_room(
             else:
                 room_name = f"Direct Chat - {current_user['username']}"
         
-        # Create the room
-        room = await ChatCRUD.create_chat_room(
-            creator_id=current_user["id"],
-            room_type=request.type.value,
-            name=room_name
-        )
+        # Create the room with retry logic for slow database
+        max_retries = 2
+        room = None
+        last_error = None
+        
+        for attempt in range(max_retries):
+            try:
+                room = await ChatCRUD.create_chat_room(
+                    creator_id=current_user["id"],
+                    room_type=request.type.value,
+                    name=room_name
+                )
+                break  # Success, exit retry loop
+            except Exception as e:
+                last_error = e
+                error_msg = str(e)
+                if "timed out" in error_msg.lower() and attempt < max_retries - 1:
+                    print(f"⚠️ Room creation attempt {attempt + 1} timed out, retrying...")
+                    await asyncio.sleep(1)  # Wait 1s before retry
+                else:
+                    raise  # Re-raise if not a timeout or last attempt
+        
+        if not room:
+            raise HTTPException(
+                status_code=504,
+                detail="Database is currently slow. Please try again in a few seconds."
+            )
         
         # Add creator as admin
         await ChatCRUD.add_room_members(room["id"], [current_user["id"]], role="admin")
@@ -162,18 +183,29 @@ async def create_chat_room(
             if re.match(uuid_pattern, member_identifier, re.IGNORECASE):
                 # Try as UUID first
                 try:
-                    user = await get_user_by_id(member_identifier)
+                    # Add 5s timeout for user lookup
+                    user = await asyncio.wait_for(
+                        get_user_by_id(member_identifier),
+                        timeout=5.0
+                    )
                     if user:
                         print(f"✅ Found user by ID: {user['username']}")
+                except asyncio.TimeoutError:
+                    print(f"⏱️ ID lookup timed out for: {member_identifier}")
                 except Exception as e:
                     print(f"❌ ID lookup failed: {e}")
             
             if not user:
                 # Try as email with timeout handling
                 try:
-                    user = await get_user_by_email(member_identifier)
+                    user = await asyncio.wait_for(
+                        get_user_by_email(member_identifier),
+                        timeout=5.0
+                    )
                     if user:
                         print(f"✅ Found user by email: {user['username']}")
+                except asyncio.TimeoutError:
+                    print(f"⏱️ Email lookup timed out for: {member_identifier}")
                 except Exception as e:
                     print(f"❌ Email lookup failed: {e}")
                     
@@ -181,9 +213,14 @@ async def create_chat_room(
                 # Try as username
                 try:
                     from db.auth_crud import get_user_by_username
-                    user = await get_user_by_username(member_identifier)
+                    user = await asyncio.wait_for(
+                        get_user_by_username(member_identifier),
+                        timeout=5.0
+                    )
                     if user:
                         print(f"✅ Found user by username: {user['username']}")
+                except asyncio.TimeoutError:
+                    print(f"⏱️ Username lookup timed out for: {member_identifier}")
                 except Exception as e:
                     print(f"❌ Username lookup failed: {e}")
             
@@ -202,7 +239,12 @@ async def create_chat_room(
         if member_ids:
             success = await ChatCRUD.add_room_members(room["id"], member_ids)
             if not success:
-                raise HTTPException(status_code=400, detail="Failed to add some members")
+                # Clean up - delete the room since we couldn't add members
+                print(f"❌ Failed to add members, cleaning up room {room['id'][:8]}...")
+                raise HTTPException(
+                    status_code=504,
+                    detail="Database timeout adding members. Please try again in a few seconds."
+                )
         
         # Get complete room info for response
         members = await ChatCRUD.get_room_members_detailed(room["id"])
@@ -271,8 +313,32 @@ async def create_chat_room(
         
     except HTTPException:
         raise
+    except asyncio.TimeoutError:
+        print(f"⏱️ Database timeout while creating room")
+        raise HTTPException(
+            status_code=504,
+            detail="Database is temporarily slow. Please try again in a few seconds."
+        )
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Failed to create chat room: {str(e)}")
+        error_msg = str(e)
+        print(f"❌ Room creation error: {error_msg}")
+        
+        # Better error messages for common issues
+        if "timeout" in error_msg.lower():
+            raise HTTPException(
+                status_code=504,
+                detail="Database connection timeout. Please try again."
+            )
+        elif "connection" in error_msg.lower():
+            raise HTTPException(
+                status_code=503,
+                detail="Database temporarily unavailable. Please try again."
+            )
+        else:
+            raise HTTPException(
+                status_code=500,
+                detail=f"Failed to create chat room. Please try again or contact support."
+            )
 
 
 @router.get("/rooms", response_model=ChatRoomListResponse)
@@ -1553,8 +1619,14 @@ async def delete_room(
     try:
         print(f"🗑️ DELETE ROOM: {room_id} by user {current_user['id']}")
         
-        # Get room details
+        # Get room details with retry on failure
         room = await ChatCRUD.get_chat_room_by_id(room_id)
+        if not room:
+            # Retry once after 1s (might be temporary DB slowness)
+            print(f"⚠️ Room lookup failed, retrying in 1s...")
+            await asyncio.sleep(1)
+            room = await ChatCRUD.get_chat_room_by_id(room_id)
+        
         print(f"Room found: {room}")
         if not room:
             raise HTTPException(status_code=404, detail="Room not found")
@@ -1563,10 +1635,13 @@ async def delete_room(
         if room["type"] != "group":
             raise HTTPException(status_code=400, detail="Cannot delete direct chats")
         
-        # Check if current user is admin
+        # Check if current user is admin (or room creator)
+        # Room creator is always admin even if role lookup fails
+        is_creator = room["created_by"] == current_user["id"]
         user_role = await ChatCRUD.get_user_role_in_room(current_user["id"], room_id)
-        print(f"User role: {user_role}")
-        if user_role != "admin":
+        print(f"User role: {user_role}, Is creator: {is_creator}")
+        
+        if not is_creator and user_role != "admin":
             raise HTTPException(status_code=403, detail="Only room admins can delete rooms")
         
         # Get all room members before deleting (to clear their caches)

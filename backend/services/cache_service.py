@@ -25,8 +25,8 @@ class CacheService:
                 self.redis_url,
                 decode_responses=True,
                 encoding='utf-8',
-                socket_connect_timeout=2,
-                socket_timeout=2
+                socket_connect_timeout=5,
+                socket_timeout=5
             )
             await self.redis.ping()
             print("✅ Redis cache connected")

@@ -6,8 +6,9 @@ import logging
 
 logger = logging.getLogger(__name__)
 
-# Initialize Supabase client (simple configuration)
-# Database CASCADE constraints make deletion fast - no custom timeout needed
+# Initialize Supabase client with default settings
+# Note: Supabase httpx client has 5s default timeout
+# We handle timeouts at asyncio.wait_for level with longer timeouts
 supabase = create_client(settings.SUPABASE_URL, settings.SUPABASE_KEY)
 
 T = TypeVar('T')
