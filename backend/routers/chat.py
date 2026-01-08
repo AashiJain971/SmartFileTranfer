@@ -1577,8 +1577,8 @@ async def delete_room(
             from services.cache_service import cache
             for member_id in member_ids:
                 cache_key = f"rooms:{member_id}"
-                deleted = await cache.delete(cache_key)
-                print(f"Cleared cache for member: {member_id[:8]}... (deleted: {deleted})")
+                await cache.delete(cache_key)
+                print(f"Cleared cache for member: {member_id[:8]}...")
             
             # Also clear member cache for the room
             await cache.delete(f"members:{room_id}")
@@ -1591,7 +1591,16 @@ async def delete_room(
             
             return {"status": "success", "message": f"Room deleted successfully"}
         else:
-            raise HTTPException(status_code=400, detail="Failed to delete room")
+            # Clear stale cache even on failure
+            from services.cache_service import cache
+            for member_id in member_ids:
+                await cache.delete(f"rooms:{member_id}")
+            await cache.delete(f"members:{room_id}")
+            
+            raise HTTPException(
+                status_code=500,
+                detail="Failed to delete room - database timeout. Please try again or contact support if issue persists."
+            )
             
     except HTTPException:
         raise

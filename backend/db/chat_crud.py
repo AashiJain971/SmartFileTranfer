@@ -149,7 +149,16 @@ class ChatCRUD:
             ]
             
             result = supabase.table("chat_room_members").insert(members_data).execute()
-            return result.data is not None and len(result.data) == len(user_ids)
+            success = result.data is not None and len(result.data) == len(user_ids)
+            
+            # Invalidate cache for all added users
+            if success:
+                for user_id in user_ids:
+                    await cache.delete(f"rooms:{user_id}")
+                    await cache.delete(f"membership:{user_id}:{room_id}")
+                    print(f"🗑️ Cleared cache for user {user_id[:8]}... in room {room_id[:8]}...")
+            
+            return success
         except Exception as e:
             print(f"Error adding room members: {e}")
             return False
@@ -174,7 +183,10 @@ class ChatCRUD:
             success = result.data is not None and len(result.data) > 0
             
             if success:
-                print(f"🔧 SUCCESS: Added user {user_id} to room {room_id}")
+                # Invalidate cache for the added user
+                await cache.delete(f"rooms:{user_id}")
+                await cache.delete(f"membership:{user_id}:{room_id}")
+                print(f"🔧 SUCCESS: Added user {user_id} to room {room_id} and cleared cache")
             else:
                 print(f"🔧 ERROR: Failed to add user {user_id} to room {room_id}")
                 
@@ -261,10 +273,14 @@ class ChatCRUD:
             return cached
         
         try:
-            result = supabase.table("chat_room_members")\
-                .select("user_id, role, joined_at, users(username, email)")\
-                .eq("room_id", room_id)\
-                .execute()
+            # Use timeout to prevent hanging
+            async def fetch_members():
+                return supabase.table("chat_room_members")\
+                    .select("user_id, role, joined_at, users(username, email)")\
+                    .eq("room_id", room_id)\
+                    .execute()
+            
+            result = await asyncio.wait_for(fetch_members(), timeout=10.0)
             
             members = []
             for member in result.data:
@@ -277,10 +293,14 @@ class ChatCRUD:
                     "joined_at": member["joined_at"]
                 })
             
-            # Cache for 5 minutes
-            await cache.set(cache_key, members, ttl=300)
+            # Only cache if we got valid results
+            if members:
+                await cache.set(cache_key, members, ttl=300)
             
             return members
+        except asyncio.TimeoutError:
+            print(f"⚠️ Timeout getting members for room {room_id[:8]}... - NOT caching empty result")
+            return []
         except Exception as e:
             print(f"❌ Error getting room members: {e}")
             return []
@@ -882,35 +902,47 @@ class ChatCRUD:
     
     @staticmethod
     async def delete_room(room_id: str) -> bool:
-        """Delete a chat room (admin only, group chats only)"""
+        """Delete a chat room (admin only, group chats only) with timeout handling"""
         try:
             print(f"🗑️ Deleting room {room_id}...")
             
-            # Step 1: Delete all messages in the room
+            # Step 1: Delete all messages in the room with timeout
             print(f"Deleting messages...")
-            messages_result = supabase.table("messages")\
-                .delete()\
-                .eq("room_id", room_id)\
-                .execute()
+            async def delete_messages():
+                return supabase.table("messages")\
+                    .delete()\
+                    .eq("room_id", room_id)\
+                    .execute()
+            
+            messages_result = await asyncio.wait_for(delete_messages(), timeout=30.0)
             print(f"Deleted {len(messages_result.data) if messages_result.data else 0} messages")
             
-            # Step 2: Delete all room members
+            # Step 2: Delete all room members with timeout
             print(f"Deleting members...")
-            members_result = supabase.table("chat_room_members")\
-                .delete()\
-                .eq("room_id", room_id)\
-                .execute()
+            async def delete_members():
+                return supabase.table("chat_room_members")\
+                    .delete()\
+                    .eq("room_id", room_id)\
+                    .execute()
+            
+            members_result = await asyncio.wait_for(delete_members(), timeout=15.0)
             print(f"Deleted {len(members_result.data) if members_result.data else 0} members")
             
-            # Step 3: Delete the room itself
+            # Step 3: Delete the room itself with timeout
             print(f"Deleting room...")
-            result = supabase.table("chat_rooms")\
-                .delete()\
-                .eq("id", room_id)\
-                .execute()
+            async def delete_room_record():
+                return supabase.table("chat_rooms")\
+                    .delete()\
+                    .eq("id", room_id)\
+                    .execute()
+            
+            result = await asyncio.wait_for(delete_room_record(), timeout=15.0)
             print(f"Room deletion result: {result.data}")
             
             return True
+        except asyncio.TimeoutError:
+            print(f"❌ Timeout deleting room {room_id} - Database may be slow")
+            return False
         except Exception as e:
             print(f"❌ Error deleting room: {e}")
             import traceback
@@ -926,6 +958,11 @@ class ChatCRUD:
                 .eq("room_id", room_id)\
                 .eq("user_id", user_id)\
                 .execute()
+            
+            # Invalidate cache for the removed user
+            await cache.delete(f"rooms:{user_id}")
+            await cache.delete(f"membership:{user_id}:{room_id}")
+            print(f"🗑️ Cleared cache for user {user_id[:8]}... removed from room {room_id[:8]}...")
             
             return True
         except Exception as e:
