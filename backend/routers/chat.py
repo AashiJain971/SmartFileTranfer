@@ -137,33 +137,25 @@ async def create_chat_room(
             else:
                 room_name = f"Direct Chat - {current_user['username']}"
         
-        # Create the room with retry logic for slow database
-        max_retries = 2
-        room = None
-        last_error = None
-        
-        for attempt in range(max_retries):
-            try:
-                room = await ChatCRUD.create_chat_room(
-                    creator_id=current_user["id"],
-                    room_type=request.type.value,
-                    name=room_name
-                )
-                break  # Success, exit retry loop
-            except Exception as e:
-                last_error = e
-                error_msg = str(e)
-                if "timed out" in error_msg.lower() and attempt < max_retries - 1:
-                    print(f"⚠️ Room creation attempt {attempt + 1} timed out, retrying...")
-                    await asyncio.sleep(1)  # Wait 1s before retry
-                else:
-                    raise  # Re-raise if not a timeout or last attempt
-        
-        if not room:
-            raise HTTPException(
-                status_code=504,
-                detail="Database is currently slow. Please try again in a few seconds."
+        # Create the room (ChatCRUD handles retries internally)
+        try:
+            room = await ChatCRUD.create_chat_room(
+                creator_id=current_user["id"],
+                room_type=request.type.value,
+                name=room_name
             )
+        except Exception as e:
+            error_msg = str(e)
+            if "too slow" in error_msg.lower() or "timeout" in error_msg.lower():
+                raise HTTPException(
+                    status_code=504,
+                    detail="Database is slow. Please wait 30 seconds and try again."
+                )
+            else:
+                raise HTTPException(
+                    status_code=500,
+                    detail=f"Failed to create room: {error_msg}"
+                )
         
         # Add creator as admin
         await ChatCRUD.add_room_members(room["id"], [current_user["id"]], role="admin")
@@ -196,41 +188,63 @@ async def create_chat_room(
                     print(f"❌ ID lookup failed: {e}")
             
             if not user:
-                # Try as email with timeout handling
-                try:
-                    user = await asyncio.wait_for(
-                        get_user_by_email(member_identifier),
-                        timeout=5.0
-                    )
-                    if user:
-                        print(f"✅ Found user by email: {user['username']}")
-                except asyncio.TimeoutError:
-                    print(f"⏱️ Email lookup timed out for: {member_identifier}")
-                except Exception as e:
-                    print(f"❌ Email lookup failed: {e}")
+                # Try as email with retry logic for slow database
+                max_lookup_attempts = 3
+                for lookup_attempt in range(max_lookup_attempts):
+                    try:
+                        user = await asyncio.wait_for(
+                            get_user_by_email(member_identifier),
+                            timeout=10.0  # Increased timeout from 5s to 10s
+                        )
+                        if user:
+                            print(f"✅ Found user by email: {user['username']}")
+                            break  # Success, exit retry loop
+                    except asyncio.TimeoutError:
+                        if lookup_attempt < max_lookup_attempts - 1:
+                            wait_time = 0.5 * (lookup_attempt + 1)
+                            print(f"⏱️ Email lookup timed out (attempt {lookup_attempt + 1}/{max_lookup_attempts}), retrying in {wait_time}s...")
+                            await asyncio.sleep(wait_time)
+                        else:
+                            print(f"❌ Email lookup failed after {max_lookup_attempts} attempts for: {member_identifier}")
+                    except Exception as e:
+                        print(f"❌ Email lookup error: {e}")
+                        break  # Don't retry on non-timeout errors
                     
             if not user:
-                # Try as username
-                try:
-                    from db.auth_crud import get_user_by_username
-                    user = await asyncio.wait_for(
-                        get_user_by_username(member_identifier),
-                        timeout=5.0
-                    )
-                    if user:
-                        print(f"✅ Found user by username: {user['username']}")
-                except asyncio.TimeoutError:
-                    print(f"⏱️ Username lookup timed out for: {member_identifier}")
-                except Exception as e:
-                    print(f"❌ Username lookup failed: {e}")
+                # Try as username with retry logic
+                max_lookup_attempts = 3
+                for lookup_attempt in range(max_lookup_attempts):
+                    try:
+                        from db.auth_crud import get_user_by_username
+                        user = await asyncio.wait_for(
+                            get_user_by_username(member_identifier),
+                            timeout=10.0  # Increased timeout from 5s to 10s
+                        )
+                        if user:
+                            print(f"✅ Found user by username: {user['username']}")
+                            break  # Success, exit retry loop
+                    except asyncio.TimeoutError:
+                        if lookup_attempt < max_lookup_attempts - 1:
+                            wait_time = 0.5 * (lookup_attempt + 1)
+                            print(f"⏱️ Username lookup timed out (attempt {lookup_attempt + 1}/{max_lookup_attempts}), retrying in {wait_time}s...")
+                            await asyncio.sleep(wait_time)
+                        else:
+                            print(f"❌ Username lookup failed after {max_lookup_attempts} attempts for: {member_identifier}")
+                    except Exception as e:
+                        print(f"❌ Username lookup error: {e}")
+                        break  # Don't retry on non-timeout errors
             
             if user and user["id"] != current_user["id"]:
                 member_ids.append(user["id"])
                 print(f"✅ Added member: {user['username']}")
             elif not user:
-                # More specific error message
-                error_msg = f"User not found or database temporarily unavailable: {member_identifier}"
-                print(f"❌ {error_msg}")
+                # Better error message with troubleshooting
+                error_msg = (
+                    f"Could not find user '{member_identifier}'. "
+                    f"Please check: 1) Email/username is correct, "
+                    f"2) User has signed up, 3) Try again if database is slow."
+                )
+                print(f"❌ User lookup failed for: {member_identifier}")
                 raise HTTPException(
                     status_code=404, 
                     detail=error_msg
@@ -433,6 +447,53 @@ async def get_chat_room(
 
 
 # ✅ MESSAGE OPERATIONS
+
+@router.get("/messages/search/{message_id_prefix}")
+async def search_message_by_id(
+    message_id_prefix: str,
+    current_user: dict = Depends(get_current_active_user)
+):
+    """Search for a message by ID prefix across all user's rooms - FAST direct query"""
+    try:
+        print(f"🔍 Searching for message with ID prefix: {message_id_prefix}")
+        
+        # Direct database query for message starting with prefix
+        message = await ChatCRUD.get_message_by_id_prefix(message_id_prefix, current_user["id"])
+        
+        if not message:
+            raise HTTPException(status_code=404, detail=f"Message {message_id_prefix} not found")
+        
+        # Get user's status for this message
+        status = await ChatCRUD.get_message_status(message["id"], current_user["id"])
+        
+        # Build response
+        return {
+            "id": message["id"],
+            "room_id": message["room_id"],
+            "sender_id": message["sender_id"],
+            "sender_username": message.get("sender_username", "Unknown"),
+            "message_type": message["message_type"],
+            "content": message.get("content"),
+            "file_session_id": message.get("file_session_id"),
+            "file_path": message.get("file_path"),
+            "file_name": message.get("file_name"),
+            "file_size": message.get("file_size"),
+            "file_hash": message.get("file_hash"),
+            "blockchain_tx_hash": message.get("blockchain_tx_hash"),
+            "blockchain_block_number": message.get("blockchain_block_number"),
+            "ipfs_cid": message.get("ipfs_cid"),
+            "certificate_url": message.get("certificate_url"),
+            "created_at": message["created_at"],
+            "updated_at": message.get("updated_at", message["created_at"]),
+            "status": status
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"❌ Error searching message: {e}")
+        raise HTTPException(status_code=500, detail=f"Failed to search message: {str(e)}")
+
 
 @router.get("/rooms/{room_id}/messages", response_model=MessagesResponse)
 async def get_room_messages(
@@ -1572,8 +1633,25 @@ async def download_chat_file(
             raise HTTPException(status_code=400, detail="Message does not contain a file")
         
         file_path = message["file_path"]
+        
+        # Make path absolute if it's relative
+        if not os.path.isabs(file_path):
+            file_path = os.path.join(os.getcwd(), file_path)
+        
+        print(f"🔍 Looking for file at: {file_path}")
+        print(f"🔍 File exists: {os.path.exists(file_path)}")
+        
         if not os.path.exists(file_path):
-            raise HTTPException(status_code=404, detail="File not found on server")
+            # Try alternative path with backend/ prefix
+            alt_path = os.path.join(os.getcwd(), "backend", message["file_path"])
+            print(f"🔍 Trying alternative path: {alt_path}")
+            if os.path.exists(alt_path):
+                file_path = alt_path
+            else:
+                raise HTTPException(
+                    status_code=404, 
+                    detail=f"File not found. Checked: {file_path}, {alt_path}"
+                )
         
         # ✅ USE EXISTING HASH VERIFICATION
         from utils.hash_utils import verify_file_integrity

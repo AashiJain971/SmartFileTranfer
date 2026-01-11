@@ -10,6 +10,8 @@ import typer
 from rich.console import Console
 from rich.table import Table
 from rich.prompt import Confirm
+from rich.panel import Panel
+from rich.columns import Columns
 import httpx
 
 from fylix.config import config
@@ -20,7 +22,9 @@ from fylix import __version__
 app = typer.Typer(
     name="fylix",
     help="FYLIX - Secure file transfer with blockchain verification",
-    add_completion=False
+    add_completion=False,
+    rich_markup_mode="rich",
+    pretty_exceptions_show_locals=False
 )
 
 # Force console to use reasonable width even on narrow terminals
@@ -35,8 +39,9 @@ def version_callback(value: bool):
         console.print(f"[cyan]FYLIX CLI[/cyan] [green]v{__version__}[/green]")
         raise typer.Exit()
 
-@app.callback()
+@app.callback(invoke_without_command=True)
 def main(
+    ctx: typer.Context,
     version: Optional[bool] = typer.Option(
         None,
         "--version",
@@ -48,9 +53,96 @@ def main(
     )
 ):
     """
-    FYLIX - Secure file transfer with blockchain verification
+    [bold cyan]FYLIX[/bold cyan] - Secure file transfer with blockchain verification
+    
+    [bold green]Quick Start:[/bold green]
+      [yellow]fylix signup[/yellow] [cyan]<email> <username>[/cyan]  [dim]# Create account[/dim]
+      [yellow]fylix login[/yellow] [cyan]<email>[/cyan]                [dim]# Login[/dim]
+      [yellow]fylix send[/yellow] [cyan]<file> <recipient>[/cyan]      [dim]# Send file[/dim]
+      [yellow]fylix inbox[/yellow]                           [dim]# Check received files[/dim]
+      [yellow]fylix receive[/yellow] [cyan]<message_id>[/cyan]          [dim]# Download file[/dim]
+    
+    [bold]Use[/bold] [yellow]fylix <command> --help[/yellow] [bold]for detailed syntax[/bold]
     """
-    pass
+    if ctx.invoked_subcommand is None and not version:
+        # Show custom help when no command is provided
+        console.print("\n[bold cyan]FYLIX CLI[/bold cyan] [green]v" + __version__ + "[/green]")
+        console.print("[dim]Secure file transfer with blockchain verification[/dim]\n")
+        
+        help_text = [
+            Panel(
+                "[yellow]fylix signup[/yellow] [cyan]EMAIL USERNAME[/cyan]\n"
+                "[dim]Options:[/dim] [magenta]-p, --password[/magenta]\n"
+                "         [magenta]-f, --first-name[/magenta]\n"
+                "         [magenta]-l, --last-name[/magenta]",
+                title="[bold green]Authentication[/bold green]",
+                border_style="green"
+            ),
+            Panel(
+                "[yellow]fylix login[/yellow] [cyan]EMAIL[/cyan]\n"
+                "[dim]Options:[/dim] [magenta]-p, --password[/magenta]\n\n"
+                "[yellow]fylix logout[/yellow]\n"
+                "[dim]Clear stored credentials[/dim]",
+                title="[bold green]Login/Logout[/bold green]",
+                border_style="green"
+            )
+        ]
+        
+        transfer_help = [
+            Panel(
+                "[yellow]fylix send[/yellow] [cyan]FILE RECIPIENT[/cyan]\n"
+                "[dim]Send file with blockchain proof[/dim]\n"
+                "[dim]Example:[/dim] fylix send doc.pdf user@example.com\n\n"
+                "[yellow]fylix inbox[/yellow] [magenta][OPTIONS][/magenta]\n"
+                "[dim]Options:[/dim] [magenta]--page[/magenta] [cyan]N[/cyan]\n"
+                "         [magenta]--status[/magenta] [cyan]pending|verified[/cyan]",
+                title="[bold blue]File Transfer[/bold blue]",
+                border_style="blue"
+            ),
+            Panel(
+                "[yellow]fylix receive[/yellow] [cyan]MESSAGE_ID[/cyan]\n"
+                "[dim]Options:[/dim] [magenta]-o, --output[/magenta] [cyan]DIR[/cyan]\n"
+                "[dim]Download with integrity check[/dim]\n\n"
+                "[yellow]fylix verify[/yellow] [cyan]MESSAGE_ID[/cyan]\n"
+                "[dim]Show blockchain proof[/dim]",
+                title="[bold blue]Download & Verify[/bold blue]",
+                border_style="blue"
+            )
+        ]
+        
+        room_help = [
+            Panel(
+                "[yellow]fylix rooms[/yellow]\n"
+                "[dim]List all chat rooms[/dim]\n\n"
+                "[yellow]fylix create-room[/yellow] [cyan]NAME[/cyan]\n"
+                "[dim]Options:[/dim] [magenta]--members[/magenta] [cyan]email1,email2[/cyan]",
+                title="[bold magenta]Rooms[/bold magenta]",
+                border_style="magenta"
+            ),
+            Panel(
+                "[yellow]fylix chat[/yellow] [cyan]ROOM_ID[/cyan]\n"
+                "[dim]Interactive chat in room[/dim]\n\n"
+                "[yellow]fylix send-message[/yellow] [cyan]ROOM_ID TEXT[/cyan]\n"
+                "[dim]Send message to room[/dim]",
+                title="[bold magenta]Messaging[/bold magenta]",
+                border_style="magenta"
+            )
+        ]
+        
+        console.print(Columns(help_text))
+        console.print()
+        console.print(Columns(transfer_help))
+        console.print()
+        console.print(Columns(room_help))
+        console.print()
+        console.print("[bold yellow]More Commands:[/bold yellow]")
+        console.print("  [yellow]fylix resume[/yellow] [cyan]TRANSFER_ID[/cyan]     [dim]# Resume failed transfer[/dim]")
+        console.print("  [yellow]fylix whoami[/yellow]                  [dim]# Show current user[/dim]")
+        console.print("  [yellow]fylix deleteaccount[/yellow]           [dim]# Delete your account[/dim]")
+        console.print()
+        console.print("[dim]Use [/dim][yellow]fylix <command> --help[/yellow][dim] for detailed information[/dim]")
+        console.print("[dim]Version:[/dim] [green]" + __version__ + "[/green]")
+        raise typer.Exit()
 
 
 # ==================== SIGNUP ====================
@@ -66,7 +158,17 @@ def signup(
     """
     Create a new FYLIX account
     
-    Example: fylix signup user@example.com johndoe
+    [bold yellow]Syntax:[/bold yellow]
+      fylix signup [cyan]EMAIL USERNAME[/cyan] [magenta][OPTIONS][/magenta]
+    
+    [bold green]Examples:[/bold green]
+      fylix signup user@example.com johndoe
+      fylix signup alice@test.com alice123 -f Alice -l Smith
+    
+    [bold blue]Options:[/bold blue]
+      [magenta]-p, --password[/magenta]    Your password (will prompt if not provided)
+      [magenta]-f, --first-name[/magenta]  Your first name (optional)
+      [magenta]-l, --last-name[/magenta]   Your last name (optional)
     """
     async def _signup():
         try:
@@ -138,7 +240,15 @@ def login(
     """
     Login to FYLIX backend and store credentials locally
     
-    Example: fylix login user@example.com
+    [bold yellow]Syntax:[/bold yellow]
+      fylix login [cyan]EMAIL[/cyan] [magenta][OPTIONS][/magenta]
+    
+    [bold green]Examples:[/bold green]
+      fylix login user@example.com
+      fylix login alice@test.com -p MyPassword123
+    
+    [bold blue]Options:[/bold blue]
+      [magenta]-p, --password[/magenta]  Your password (will prompt if not provided)
     """
     async def _login():
         try:
@@ -182,7 +292,11 @@ def logout():
     """
     Logout and clear stored credentials
     
-    Example: fylix logout
+    [bold yellow]Syntax:[/bold yellow]
+      fylix logout
+    
+    [bold green]Example:[/bold green]
+      fylix logout
     """
     if not config.is_logged_in():
         console.print("[yellow]⚠ Not logged in[/yellow]")
@@ -202,16 +316,22 @@ def deleteaccount(
     """
     Permanently delete your FYLIX account and all associated data
     
-    ⚠️  WARNING: This action cannot be undone!
+    [bold yellow]Syntax:[/bold yellow]
+      fylix deleteaccount [magenta][OPTIONS][/magenta]
     
-    This will:
-    - Delete your account permanently
-    - Remove you from all chat rooms (groups and direct chats)
-    - Delete all your messages
-    - Delete all your file sessions
-    - Remove all your data from the system
+    [bold red]⚠️  WARNING: This action cannot be undone![/bold red]
     
-    Example: fylix deleteaccount
+    [bold]This will delete:[/bold]
+      - Your account permanently
+      - All chat rooms and messages
+      - All file transfers
+      - All your data from the system
+    
+    [bold green]Example:[/bold green]
+      fylix deleteaccount
+    
+    [bold blue]Options:[/bold blue]
+      [magenta]-p, --password[/magenta]  Your password for confirmation
     """
     if not config.is_logged_in():
         console.print("[red]✗ You must be logged in to delete your account[/red]")
@@ -227,10 +347,10 @@ def deleteaccount(
             console.print("\n[red bold]⚠️  WARNING: PERMANENT ACCOUNT DELETION[/red bold]")
             console.print(f"[yellow]Account: {username} ({email})[/yellow]")
             console.print("[red]This will permanently delete:[/red]")
-            console.print("  • Your account")
-            console.print("  • All your messages")
-            console.print("  • All your file transfers")
-            console.print("  • Your membership in all rooms")
+            console.print("  - Your account")
+            console.print("  - All your messages")
+            console.print("  - All your file transfers")
+            console.print("  - Your membership in all rooms")
             console.print("\n[red bold]This action CANNOT be undone![/red bold]\n")
             
             confirm = Confirm.ask("[red]Are you absolutely sure you want to delete your account?[/red]")
@@ -281,9 +401,13 @@ def deleteaccount(
 @app.command()
 def whoami():
     """
-    Show current logged-in user
+    Show current logged-in user information
     
-    Example: fylix whoami
+    [bold yellow]Syntax:[/bold yellow]
+      fylix whoami
+    
+    [bold green]Example:[/bold green]
+      fylix whoami
     """
     if not config.is_logged_in():
         console.print("[yellow]⚠ Not logged in[/yellow]")
@@ -305,10 +429,17 @@ def inbox(range: str = typer.Argument("1-10", help="Message range (e.g., 1-10, m
     """
     List incoming file transfers (loads 10 messages at a time)
     
-    Examples:
-        fylix inbox          # Load messages 1-10
-        fylix inbox 1-10     # Load messages 1-10
-        fylix inbox 11-20    # Load next 10 messages
+    [bold yellow]Syntax:[/bold yellow]
+      fylix inbox [cyan][RANGE][/cyan]
+    
+    [bold green]Examples:[/bold green]
+      fylix inbox           [dim]# Load messages 1-10 (default)[/dim]
+      fylix inbox 1-10      [dim]# Load messages 1-10[/dim]
+      fylix inbox 11-20     [dim]# Load next 10 messages[/dim]
+      fylix inbox 21-30     [dim]# Load messages 21-30[/dim]
+    
+    [bold blue]Arguments:[/bold blue]
+      [cyan]RANGE[/cyan]  Message range (default: 1-10, max 10 per request)
     """
     async def _inbox(range_str: str):
         if not config.is_logged_in():
@@ -356,7 +487,16 @@ def inbox(range: str = typer.Argument("1-10", help="Message range (e.g., 1-10, m
                     messages_response = await api_client.get_room_messages(room_id, limit=200)
                     messages = messages_response.get("messages", [])
                 except Exception as e:
-                    # Skip rooms that timeout silently
+                    # Check for auth errors - don't skip these silently
+                    error_str = str(e)
+                    if "401" in error_str or "Unauthorized" in error_str or "403" in error_str or "Forbidden" in error_str:
+                        # Auth error - propagate up to show proper error message
+                        raise
+                    # Skip rooms that timeout or have other errors (but log them)
+                    import sys
+                    import traceback
+                    print(f"⚠️ Warning: Skipped room '{room_name}' due to error: {e.__class__.__name__}: {e}", file=sys.stderr)
+                    # traceback.print_exc(file=sys.stderr)  # Uncomment for debugging
                     continue
                 
                 # Filter file messages (type can be "file" or "image")
@@ -499,10 +639,16 @@ def outbox(range: str = typer.Argument("1-10", help="Message range (e.g., 1-10, 
     """
     List files you've sent to others (loads 10 messages at a time)
     
-    Examples:
-        fylix outbox          # Load messages 1-10
-        fylix outbox 1-10     # Load messages 1-10
-        fylix outbox 11-20    # Load next 10 messages
+    [bold yellow]Syntax:[/bold yellow]
+      fylix outbox [cyan][RANGE][/cyan]
+    
+    [bold green]Examples:[/bold green]
+      fylix outbox          [dim]# Load messages 1-10 (default)[/dim]
+      fylix outbox 1-10     [dim]# Load messages 1-10[/dim]
+      fylix outbox 11-20    [dim]# Load next 10 messages[/dim]
+    
+    [bold blue]Arguments:[/bold blue]
+      [cyan]RANGE[/cyan]  Message range (default: 1-10, max 10 per request)
     """
     async def _outbox(range_str: str):
         if not config.is_logged_in():
@@ -560,7 +706,16 @@ def outbox(range: str = typer.Argument("1-10", help="Message range (e.g., 1-10, 
                     messages_response = await api_client.get_room_messages(room_id, limit=200)
                     messages = messages_response.get("messages", [])
                 except Exception as e:
-                    # Skip rooms that timeout silently
+                    # Check for auth errors - don't skip these silently
+                    error_str = str(e)
+                    if "401" in error_str or "Unauthorized" in error_str or "403" in error_str or "Forbidden" in error_str:
+                        # Auth error - propagate up to show proper error message
+                        raise
+                    # Skip rooms that timeout or have other errors (but log them)
+                    import sys
+                    import traceback
+                    print(f"⚠️ Warning: Skipped room '{room_name}' due to error: {e.__class__.__name__}: {e}", file=sys.stderr)
+                    # traceback.print_exc(file=sys.stderr)  # Uncomment for debugging
                     continue
                 
                 # Filter file messages sent by current user (type can be "file" or "image")
@@ -696,13 +851,17 @@ def rooms():
     """
     List all your chat rooms (direct chats and groups)
     
-    Shows:
-    - Room name/participants
-    - Room type (direct/group)
-    - Member count
-    - Room ID for other commands
+    [bold yellow]Syntax:[/bold yellow]
+      fylix rooms
     
-    Example: fylix rooms
+    [bold]Shows:[/bold]
+      - Room name/participants
+      - Room type (direct/group)
+      - Member count
+      - Room ID for other commands
+    
+    [bold green]Example:[/bold green]
+      fylix rooms
     """
     async def _rooms():
         if not config.is_logged_in():
@@ -794,9 +953,15 @@ def create(
     """
     Create a new group chat
     
-    Examples:
-        fylix create "Team Project"
-        fylix create "Study Group" --members user1@email.com,user2@email.com
+    [bold yellow]Syntax:[/bold yellow]
+      fylix create [cyan]NAME[/cyan] [magenta][OPTIONS][/magenta]
+    
+    [bold green]Examples:[/bold green]
+      fylix create "Team Project"
+      fylix create "Study Group" -m user1@email.com,user2@email.com
+    
+    [bold blue]Options:[/bold blue]
+      [magenta]-m, --members[/magenta]  Comma-separated emails to add as members
     """
     async def _create():
         if not config.is_logged_in():
@@ -824,8 +989,51 @@ def create(
             console.print(f"[dim]Add members: fylix add {room.get('id')[:8]} <email>[/dim]")
             console.print(f"[dim]Send files: fylix send <file> <email>[/dim]")
         
+        except httpx.HTTPStatusError as e:
+            # Parse the error response for better user messaging
+            try:
+                error_detail = e.response.json().get("detail", str(e))
+            except:
+                error_detail = str(e)
+            
+            # Provide helpful error messages
+            if "404" in str(e.response.status_code):
+                if "not found" in error_detail.lower() or "could not find user" in error_detail.lower():
+                    console.print(f"[red]✗ User not found[/red]")
+                    console.print(f"[yellow]Details: {error_detail}[/yellow]")
+                    console.print(f"\n[cyan]💡 Troubleshooting:[/cyan]")
+                    console.print("  1. Check that the email addresses are correct")
+                    console.print("  2. Make sure users have signed up (fylix signup)")
+                    console.print("  3. Try again - database might be slow")
+                else:
+                    console.print(f"[red]✗ Not found: {error_detail}[/red]")
+            elif "504" in str(e.response.status_code) or "timeout" in error_detail.lower() or "slow" in error_detail.lower():
+                console.print(f"[yellow]⏱️  Database is slow right now[/yellow]")
+                console.print(f"[dim]This can happen with free-tier databases or slow internet[/dim]")
+                console.print(f"\n[cyan]💡 What to do:[/cyan]")
+                console.print("  1. Wait 30 seconds for the database to respond")
+                console.print("  2. Try the command again")
+                console.print("  3. If it persists, check your internet connection")
+            elif "500" in str(e.response.status_code):
+                console.print(f"[red]✗ Server error[/red]")
+                console.print(f"[yellow]{error_detail}[/yellow]")
+                if "timeout" in error_detail.lower() or "slow" in error_detail.lower():
+                    console.print(f"\n[cyan]💡 The database is responding slowly[/cyan]")
+                    console.print("  Wait 30 seconds and try again")
+            else:
+                console.print(f"[red]✗ Failed to create group: {error_detail}[/red]")
+            raise typer.Exit(1)
+        except httpx.TimeoutException:
+            console.print(f"[yellow]⏱️  Request timed out[/yellow]")
+            console.print("[cyan]The server took too long to respond. Try again in 30 seconds.[/cyan]")
+            raise typer.Exit(1)
         except Exception as e:
-            console.print(f"[red]✗ Failed to create group: {e}[/red]")
+            error_msg = str(e)
+            if "timeout" in error_msg.lower() or "timed out" in error_msg.lower():
+                console.print(f"[yellow]⏱️  Request timed out[/yellow]")
+                console.print("[cyan]The server is responding slowly. Please try again in a moment.[/cyan]")
+            else:
+                console.print(f"[red]✗ Failed to create group: {error_msg}[/red]")
             raise typer.Exit(1)
         
         finally:
@@ -938,7 +1146,16 @@ def add(
     """
     Add member to a group chat (admin only)
     
-    Example: fylix add abc12345 user@email.com
+    [bold yellow]Syntax:[/bold yellow]
+      fylix add [cyan]ROOM_ID EMAIL[/cyan]
+    
+    [bold green]Example:[/bold green]
+      fylix add abc12345 user@email.com
+      fylix add a1b2c3 newmember@test.com
+    
+    [bold blue]Arguments:[/bold blue]
+      [cyan]ROOM_ID[/cyan]  Room ID (partial match supported)
+      [cyan]EMAIL[/cyan]    Email of user to add to the group
     """
     async def _add():
         if not config.is_logged_in():
@@ -1209,9 +1426,9 @@ def sendroom(
                 TextColumn("[bold blue]{task.fields[filename]}", justify="right"),
                 BarColumn(bar_width=None),
                 "[progress.percentage]{task.percentage:>3.1f}%",
-                "•",
+                "-",
                 TransferSpeedColumn(),
-                "•",
+                "-",
                 TimeRemainingColumn(),
             ) as progress:
                 task_id = progress.add_task(
@@ -1314,14 +1531,24 @@ def send(
     """
     Send file to recipient with chunked upload and auto-resume
     
-    Features:
-    - Chunked upload (1MB chunks by default)
-    - Live progress bar
-    - Auto-resume on temporary network loss
-    - Persist state for manual resume after crash
-    - IPFS storage + blockchain proof
+    [bold yellow]Syntax:[/bold yellow]
+      fylix send [cyan]FILE RECIPIENT_EMAIL[/cyan]
     
-    Example: fylix send document.pdf user@example.com
+    [bold green]Examples:[/bold green]
+      fylix send document.pdf alice@example.com
+      fylix send ~/Downloads/report.docx bob@test.com
+      fylix send /path/to/image.jpg user@domain.com
+    
+    [bold magenta]Features:[/bold magenta]
+      - Chunked upload (AI-optimized size)
+      - Live progress bar with ETA
+      - Auto-resume on network loss
+      - IPFS decentralized storage
+      - Blockchain proof of transfer
+    
+    [bold blue]Arguments:[/bold blue]
+      [cyan]FILE[/cyan]             Path to file to send
+      [cyan]RECIPIENT_EMAIL[/cyan]  Recipient's email address
     """
     async def _send():
         if not config.is_logged_in():
@@ -1358,14 +1585,25 @@ def receive(
     """
     Download file with integrity verification
     
-    Security:
-    - Requires explicit user confirmation
-    - Shows file metadata before download
-    - Verifies file hash against blockchain
-    - Verifies IPFS CID (if available)
-    - Marks as CORRUPTED if verification fails
+    [bold yellow]Syntax:[/bold yellow]
+      fylix receive [cyan]MESSAGE_ID[/cyan] [magenta][OPTIONS][/magenta]
     
-    Example: fylix receive abc123def456 -o ~/Downloads
+    [bold green]Examples:[/bold green]
+      fylix receive abc123def456
+      fylix receive abc123d -o ~/Downloads
+      fylix receive a1b2c3 --output /tmp/files
+    
+    [bold magenta]Security:[/bold magenta]
+      - Requires explicit confirmation
+      - SHA-256 hash verification
+      - Blockchain proof check
+      - IPFS link validation
+    
+    [bold blue]Arguments:[/bold blue]
+      [cyan]MESSAGE_ID[/cyan]  Message ID from inbox (partial match supported)
+    
+    [bold blue]Options:[/bold blue]
+      [magenta]-o, --output[/magenta]  Output directory (default: ./downloads)
     """
     async def _receive():
         if not config.is_logged_in():
@@ -1373,34 +1611,10 @@ def receive(
             raise typer.Exit(1)
         
         try:
-            # Fetch message details first (from inbox)
+            # Fetch message details using FAST direct search endpoint
             console.print(f"\n[cyan]📋 Fetching file details...[/cyan]")
             
-            # Get all rooms and find the message (support partial ID match)
-            rooms_response = await api_client.get_user_rooms()
-            rooms = rooms_response.get("rooms", [])
-            
-            file_info = None
-            current_user_id = config.get_user_id()
-            
-            for room in rooms:
-                try:
-                    # Increased to 200 for better coverage (matches inbox)
-                    messages_response = await api_client.get_room_messages(room["id"], limit=200)
-                    for msg in messages_response.get("messages", []):
-                        # Consider file/image messages (can be from self in group chats or from others)
-                        if msg["message_type"] in ["file", "image"] and msg.get("file_name"):
-                            # Support full or partial message ID match
-                            if msg["id"] == message_id or msg["id"].startswith(message_id):
-                                file_info = msg
-                                break
-                except Exception as e:
-                    # Skip rooms that timeout - continue searching
-                    console.print(f"[dim]Searching (skipping slow room)...[/dim]")
-                    continue
-                    
-                if file_info:
-                    break
+            file_info = await api_client.search_message_by_id(message_id)
             
             if not file_info:
                 console.print(f"[red]✗ Message {message_id} not found in inbox[/red]")
@@ -1408,7 +1622,7 @@ def receive(
             
             # Display file info
             console.print(f"\n[cyan]📄 File Information:[/cyan]")
-            console.print(f"Sender: {file_info['sender_username']}")
+            console.print(f"Sender: {file_info.get('sender_username', 'Unknown')}")
             console.print(f"Filename: {file_info.get('file_name', 'Unknown')}")
             console.print(f"Size: {_format_size(file_info.get('file_size', 0))}")
             console.print(f"Hash: {file_info.get('file_hash', 'N/A')[:16]}...")
@@ -1444,6 +1658,14 @@ def receive(
             
             console.print(f"\n[green]✓ File downloaded and verified[/green]")
         
+        except httpx.HTTPStatusError as e:
+            if e.response.status_code == 404:
+                console.print(f"\n[red]✗ Message {message_id} not found in your inbox[/red]")
+            elif e.response.status_code == 504:
+                console.print(f"\n[red]✗ Database timeout. Please try again in 30 seconds.[/red]")
+            else:
+                console.print(f"\n[red]✗ Receive failed: HTTP {e.response.status_code}[/red]")
+            raise typer.Exit(1)
         except Exception as e:
             console.print(f"\n[red]✗ Receive failed: {e}[/red]")
             raise typer.Exit(1)
@@ -1600,13 +1822,22 @@ def verify(
     """
     Verify file integrity using blockchain and IPFS
     
-    Shows:
-    - File hash verification
-    - Blockchain transaction details
-    - IPFS CID and Pinata status
-    - Certificate of authenticity
+    [bold yellow]Syntax:[/bold yellow]
+      fylix verify [cyan]MESSAGE_ID[/cyan]
     
-    Example: fylix verify a9bad07
+    [bold green]Examples:[/bold green]
+      fylix verify a9bad07
+      fylix verify abc123def456
+    
+    [bold magenta]Shows:[/bold magenta]
+      - SHA-256 file hash
+      - Blockchain transaction details
+      - IPFS CID and Pinata gateway
+      - Certificate of authenticity
+      - Transfer timestamp
+    
+    [bold blue]Arguments:[/bold blue]
+      [cyan]MESSAGE_ID[/cyan]  Message ID from inbox (partial match supported)
     """
     async def _verify():
         if not config.is_logged_in():

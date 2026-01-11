@@ -343,6 +343,7 @@ class FileTransferManager:
         # 2. Get blockchain proof
         blockchain_hash = None
         blockchain_ipfs = None
+        blockchain_proof = None
         try:
             blockchain_proof = await api_client.get_blockchain_proof(actual_hash)
             blockchain_hash = blockchain_proof.get("file_hash")
@@ -364,53 +365,47 @@ class FileTransferManager:
             else:
                 # Other errors should be shown
                 console.print(f"[yellow]⚠ Blockchain verification unavailable: {e}[/yellow]")
-            
-            # 3. Verify hash match
-            if expected_hash and actual_hash != expected_hash:
-                temp_path.unlink()
-                console.print(f"\n[red]✗ CORRUPTED: File hash mismatch![/red]")
-                console.print(f"[red]Expected: {expected_hash[:16]}...[/red]")
-                console.print(f"[red]Got: {actual_hash[:16]}...[/red]")
-                raise ValueError("File integrity check failed: hash mismatch")
-            
-            if blockchain_hash and actual_hash != blockchain_hash:
-                temp_path.unlink()
-                console.print(f"\n[red]✗ CORRUPTED: Blockchain verification failed![/red]")
-                raise ValueError("File integrity check failed: blockchain mismatch")
-            
-            # 4. Verify IPFS CID (if available)
-            if expected_ipfs_cid and blockchain_ipfs and expected_ipfs_cid != blockchain_ipfs:
-                console.print(f"\n[yellow]⚠ Warning: IPFS CID mismatch[/yellow]")
-                console.print(f"[yellow]Expected: {expected_ipfs_cid}[/yellow]")
-                console.print(f"[yellow]Got: {blockchain_ipfs}[/yellow]")
-            
-            console.print(f"\n[green]✓ Verification passed[/green]")
-            
-            # Move from temp to final location
-            # Extract filename from blockchain proof or use message_id
-            filename = blockchain_proof.get("file_name", f"file_{message_id}")
-            final_path = output_dir / filename
-            
-            # Handle existing files
-            if final_path.exists():
-                base = final_path.stem
-                ext = final_path.suffix
-                counter = 1
-                while final_path.exists():
-                    final_path = output_dir / f"{base}_{counter}{ext}"
-                    counter += 1
-            
-            temp_path.rename(final_path)
-            
-            console.print(f"[green]✓[/green] File saved: {final_path}")
-            
-            return final_path
         
-        except Exception as e:
-            if temp_path.exists():
-                temp_path.unlink()
-            console.print(f"\n[red]✗ Verification failed: {e}[/red]")
-            raise
+        # 3. Verify hash match (always runs, not just in except block)
+        if expected_hash and actual_hash != expected_hash:
+            temp_path.unlink()
+            console.print(f"\n[red]✗ CORRUPTED: File hash mismatch![/red]")
+            console.print(f"[red]Expected: {expected_hash[:16]}...[/red]")
+            console.print(f"[red]Got: {actual_hash[:16]}...[/red]")
+            raise ValueError("File integrity check failed: hash mismatch")
+        
+        if blockchain_hash and actual_hash != blockchain_hash:
+            temp_path.unlink()
+            console.print(f"\n[red]✗ CORRUPTED: Blockchain verification failed![/red]")
+            raise ValueError("File integrity check failed: blockchain mismatch")
+        
+        # 4. Verify IPFS CID (if available)
+        if expected_ipfs_cid and blockchain_ipfs and expected_ipfs_cid != blockchain_ipfs:
+            console.print(f"\n[yellow]⚠ Warning: IPFS CID mismatch[/yellow]")
+            console.print(f"[yellow]Expected: {expected_ipfs_cid}[/yellow]")
+            console.print(f"[yellow]Got: {blockchain_ipfs}[/yellow]")
+        
+        console.print(f"\n[green]✓ Verification passed[/green]")
+        
+        # Move from temp to final location
+        # Extract filename from blockchain proof or use message_id
+        filename = blockchain_proof.get("file_name", f"file_{message_id}") if blockchain_proof else f"file_{message_id}"
+        final_path = output_dir / filename
+        
+        # Handle existing files
+        if final_path.exists():
+            base = final_path.stem
+            ext = final_path.suffix
+            counter = 1
+            while final_path.exists():
+                final_path = output_dir / f"{base}_{counter}{ext}"
+                counter += 1
+        
+        temp_path.rename(final_path)
+        
+        console.print(f"[green]✓[/green] File saved: {final_path}")
+        
+        return final_path
     
     def _format_size(self, size_bytes: int) -> str:
         """Format file size in human-readable format"""

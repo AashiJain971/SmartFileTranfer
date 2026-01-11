@@ -13,8 +13,8 @@ class APIClient:
     
     def __init__(self, base_url: str = "http://localhost:8000"):
         self.base_url = base_url
-        # Use 15s timeout for faster user experience (reduced from 120s)
-        self.client = httpx.AsyncClient(timeout=15.0)
+        # Use 60s timeout to handle slow free-tier databases (Supabase, etc.)
+        self.client = httpx.AsyncClient(timeout=60.0)
     
     def _get_headers(self) -> Dict[str, str]:
         """Get headers with authorization token"""
@@ -260,13 +260,26 @@ class APIClient:
             return response.json()
     
     async def download_file(self, message_id: str) -> bytes:
-        """Download file from a message"""
+        """Download file from a message - uses extended timeout for large files"""
+        # Use extended timeout for file downloads (5 minutes for very large files)
+        download_timeout = httpx.Timeout(300.0, connect=30.0)
+        
         response = await self.client.get(
             f"{self.base_url}/chat/files/{message_id}/download",
-            headers=self._get_headers()
+            headers=self._get_headers(),
+            timeout=download_timeout
         )
         response.raise_for_status()
         return response.content
+    
+    async def search_message_by_id(self, message_id_prefix: str) -> Dict[str, Any]:
+        """Search for a message by ID prefix - FAST direct query"""
+        response = await self.client.get(
+            f"{self.base_url}/chat/messages/search/{message_id_prefix}",
+            headers=self._get_headers()
+        )
+        response.raise_for_status()
+        return response.json()
     
     async def get_blockchain_proof(self, file_hash: str) -> Dict[str, Any]:
         """Get blockchain proof for file integrity verification"""
