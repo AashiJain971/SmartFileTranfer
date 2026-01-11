@@ -1277,6 +1277,14 @@ async def complete_chat_file_upload(
         message_data = None
         message_error = None
         
+        # Debug: Log blockchain/IPFS status before creating message
+        print(f"\n🔍 Pre-message creation blockchain status:")
+        print(f"   blockchain_result: {blockchain_result}")
+        print(f"   ipfs_result: {ipfs_result}")
+        if blockchain_result:
+            print(f"   blockchain TX: {blockchain_result.get('transaction_hash')}")
+            print(f"   blockchain success: {blockchain_result.get('success')}")
+        
         try:
             # Attempt to create chat message (3s timeout - faster fail)
             message = await asyncio.wait_for(

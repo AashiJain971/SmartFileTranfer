@@ -330,11 +330,18 @@ def inbox(range: str = typer.Argument("1-10", help="Message range (e.g., 1-10, m
             return
         
         try:
-            console.print(f"\n[cyan]📬 Fetching inbox (messages {start}-{end})...[/cyan]")
+            from rich.progress import Progress, SpinnerColumn, TextColumn
             
-            # Get all user rooms
-            rooms_response = await api_client.get_user_rooms()
-            rooms = rooms_response.get("rooms", [])
+            with Progress(
+                SpinnerColumn(),
+                TextColumn(f"[cyan]📬 Fetching inbox (messages {start}-{end})...[/cyan]"),
+                transient=True
+            ) as progress:
+                task = progress.add_task("", total=None)
+                
+                # Get all user rooms
+                rooms_response = await api_client.get_user_rooms()
+                rooms = rooms_response.get("rooms", [])
             
             # Collect all file messages from all rooms
             incoming_files = []
@@ -344,18 +351,11 @@ def inbox(range: str = typer.Argument("1-10", help="Message range (e.g., 1-10, m
                 room_name = room.get("name", room_id[:8])
                 
                 try:
-                    # Get messages (limit 50 for faster loading - demo optimized)
-                    console.print(f"[dim]Checking {room_name}...[/dim]")
-                    messages_response = await api_client.get_room_messages(room_id, limit=50)
+                    # Get messages (limit 200 for pagination)
+                    messages_response = await api_client.get_room_messages(room_id, limit=200)
                     messages = messages_response.get("messages", [])
-                    console.print(f"[dim]Found {len(messages)} total messages in room[/dim]")
                 except Exception as e:
-                    # Handle timeouts and errors gracefully - skip this room
-                    error_type = type(e).__name__
-                    if "Timeout" in error_type or "timeout" in str(e).lower():
-                        console.print(f"[yellow]⚠ Skipping {room_name} (database timeout)[/yellow]")
-                    else:
-                        console.print(f"[yellow]⚠ Skipping {room_name} ({error_type})[/yellow]")
+                    # Skip rooms that timeout silently
                     continue
                 
                 # Filter file messages (type can be "file" or "image")
@@ -363,6 +363,11 @@ def inbox(range: str = typer.Argument("1-10", help="Message range (e.g., 1-10, m
                     if msg["message_type"] in ["file", "image"] and msg.get("file_name"):
                         # Only show files from other users (not self-sent)
                         if msg["sender_id"] != config.get_user_id():
+                            # Check for blockchain fields with fallback
+                            blockchain_tx = msg.get("blockchain_tx_hash")
+                            if not blockchain_tx:
+                                blockchain_tx = msg.get("blockchain_hash") or msg.get("tx_hash")
+                            
                             incoming_files.append({
                                 "message_id": msg["id"],
                                 "sender": msg["sender_username"],
@@ -370,7 +375,7 @@ def inbox(range: str = typer.Argument("1-10", help="Message range (e.g., 1-10, m
                                 "size": msg.get("file_size", 0),
                                 "file_hash": msg.get("file_hash"),
                                 "ipfs_cid": msg.get("ipfs_cid"),
-                                "blockchain_tx": msg.get("blockchain_tx_hash"),
+                                "blockchain_tx": blockchain_tx,
                                 "created_at": msg["created_at"],
                                 "room_name": room_name,
                                 "room_type": room.get("type", "unknown"),
@@ -412,39 +417,41 @@ def inbox(range: str = typer.Argument("1-10", help="Message range (e.g., 1-10, m
             for idx, file in enumerate(paginated_files, start=start):
                 size_str = _format_size(file["size"])
                 
-                # Format timestamp in local timezone (like websocket_test.html)
-                from datetime import datetime
+                # Format timestamp in IST (Indian Standard Time)
+                from datetime import datetime, timezone, timedelta
                 try:
                     dt = datetime.fromisoformat(file["created_at"].replace('Z', '+00:00'))
-                    # Convert to local timezone
-                    local_tz = datetime.now().astimezone().tzinfo
-                    dt_local = dt.astimezone(local_tz)
-                    time_str = dt_local.strftime("%b %d, %I:%M%p")
+                    # Convert to IST (UTC+5:30)
+                    ist_tz = timezone(timedelta(hours=5, minutes=30))
+                    dt_ist = dt.astimezone(ist_tz)
+                    time_str = dt_ist.strftime("%b %d, %I:%M%p")
                 except:
                     time_str = "Unknown"
                 
-                # Determine integrity status - check if downloaded
+                # Determine integrity status - use actual message status from database
                 msg_id = file["message_id"]
-                # Check if this file was downloaded (stored in config)
+                
+                # Check actual message delivery status
+                # Priority: downloaded > blockchain verified > pending
                 downloaded_files = config.get_credentials().get("downloaded_files", [])
                 if msg_id in downloaded_files:
                     status = "✓ Received"
                 elif file.get("blockchain_tx"):
-                    status = "✓ Verified"
+                    status = "✓ Verified" 
                 else:
                     status = "⚠ Pending"
                 
                 # Show first 7 chars (no ellipsis - easier to copy)
                 msg_id_short = file["message_id"][:7]
                 
-                # Format room info
+                # Format room info (no truncation)
                 room_type = file.get("room_type", "unknown")[:1].upper()  # G for group, D for direct
-                room_name_short = file.get("room_name", "?")[:10]  # First 10 chars
+                room_name_short = file.get("room_name", "?")  # Full name
                 room_info = f"{room_type}:{room_name_short}"
                 
                 table.add_row(
                     file["sender"],
-                    file["filename"],
+                    file["filename"],  # Full filename, no truncation
                     size_str,
                     room_info,
                     time_str,
@@ -517,11 +524,18 @@ def outbox(range: str = typer.Argument("1-10", help="Message range (e.g., 1-10, 
             return
         
         try:
-            console.print(f"\n[cyan]📤 Fetching outbox (messages {start}-{end})...[/cyan]")
+            from rich.progress import Progress, SpinnerColumn, TextColumn
             
-            # Get all user rooms
-            rooms_response = await api_client.get_user_rooms()
-            rooms = rooms_response.get("rooms", [])
+            with Progress(
+                SpinnerColumn(),
+                TextColumn(f"[cyan]📤 Fetching outbox (messages {start}-{end})...[/cyan]"),
+                transient=True
+            ) as progress:
+                task = progress.add_task("", total=None)
+                
+                # Get all user rooms
+                rooms_response = await api_client.get_user_rooms()
+                rooms = rooms_response.get("rooms", [])
             
             # Collect all file messages sent by current user
             sent_files = []
@@ -530,13 +544,14 @@ def outbox(range: str = typer.Argument("1-10", help="Message range (e.g., 1-10, 
             for room in rooms:
                 room_id = room["id"]
                 room_name = room.get("name", "Unknown")
+                room_type = room.get("type", "direct")
                 
-                # Get other member (recipient)
+                # Get other member (recipient) for direct chats
                 members = room.get("members", [])
-                recipient = "Unknown"
+                recipient_username = "Unknown"
                 for member in members:
                     if member["user_id"] != current_user_id:
-                        recipient = member["username"]
+                        recipient_username = member["username"]
                         break
                 
                 try:
@@ -550,14 +565,23 @@ def outbox(range: str = typer.Argument("1-10", help="Message range (e.g., 1-10, 
                 # Filter file messages sent by current user (type can be "file" or "image")
                 for msg in messages:
                     if msg["message_type"] in ["file", "image"] and msg.get("file_name") and msg["sender_id"] == current_user_id:
+                        # Check for blockchain fields with fallback
+                        blockchain_tx = msg.get("blockchain_tx_hash")
+                        if not blockchain_tx:
+                            # Try alternate field names
+                            blockchain_tx = msg.get("blockchain_hash") or msg.get("tx_hash")
+                        
                         sent_files.append({
                             "message_id": msg["id"],
-                            "recipient": recipient,
+                            "room_id": room_id,
+                            "room_type": room_type,
+                            "room_name": room_name,
+                            "recipient_username": recipient_username,
                             "filename": msg.get("file_name", "Unknown"),
                             "size": msg.get("file_size", 0),
                             "file_hash": msg.get("file_hash"),
                             "ipfs_cid": msg.get("ipfs_cid"),
-                            "blockchain_tx": msg.get("blockchain_tx_hash"),
+                            "blockchain_tx": blockchain_tx,
                             "created_at": msg["created_at"]
                         })
             
@@ -595,23 +619,34 @@ def outbox(range: str = typer.Argument("1-10", help="Message range (e.g., 1-10, 
             for idx, file in enumerate(paginated_files, start=start):
                 size_str = _format_size(file["size"])
                 
-                # Format timestamp
-                from datetime import datetime
+                # Format timestamp in IST (Indian Standard Time)
+                from datetime import datetime, timezone, timedelta
                 try:
                     dt = datetime.fromisoformat(file["created_at"].replace('Z', '+00:00'))
-                    time_str = dt.strftime("%b %d, %I:%M%p")
+                    # Convert to IST (UTC+5:30)
+                    ist_tz = timezone(timedelta(hours=5, minutes=30))
+                    dt_ist = dt.astimezone(ist_tz)
+                    time_str = dt_ist.strftime("%b %d, %I:%M%p")
                 except:
                     time_str = "Unknown"
                 
-                # Determine delivery status
-                status = "✓ Delivered" if file.get("blockchain_tx") else "⚠ Pending"
+                # Determine delivery status based on blockchain verification
+                status = "✓ Sent" if file.get("blockchain_tx") else "⚠ Pending"
                 
-                # Truncate message ID for display
-                msg_id_short = file["message_id"][:7] + "…"
+                # Show first 7 chars (same format as inbox, no ellipsis)
+                msg_id_short = file["message_id"][:7]
+                
+                # Determine recipient display based on room type
+                if file["room_type"] == "group":
+                    # Show room name and first 7 chars of room ID
+                    recipient_display = f"{file['room_name']} ({file['room_id'][:7]})"
+                else:
+                    # Direct chat - show recipient username
+                    recipient_display = file["recipient_username"]
                 
                 table.add_row(
-                    file["recipient"],
-                    file["filename"],
+                    recipient_display,
+                    file["filename"],  # Full filename, no truncation
                     size_str,
                     time_str,
                     status,
@@ -1197,13 +1232,31 @@ def sendroom(
                         
                         progress.update(task_id, advance=len(chunk_data))
             
-            # Complete upload
-            console.print("\n[cyan]Finalizing upload...[/cyan]")
-            complete_response = await api_client.complete_upload(
-                room_id=matching_room["id"],
-                file_id=file_id,
-                file_hash=file_hash
-            )
+            # Complete upload with verification progress
+            from rich.progress import Progress, SpinnerColumn, TextColumn, TimeElapsedColumn
+            import time
+            
+            with Progress(
+                SpinnerColumn(),
+                TextColumn("[cyan]Finalizing upload & verifying blockchain...[/cyan]"),
+                TimeElapsedColumn(),
+                transient=False
+            ) as progress:
+                task = progress.add_task("", total=None)
+                start_time = time.time()
+                
+                try:
+                    complete_response = await api_client.complete_upload(
+                        room_id=matching_room["id"],
+                        file_id=file_id,
+                        file_hash=file_hash
+                    )
+                    elapsed = time.time() - start_time
+                    progress.update(task, completed=True)
+                except Exception as complete_error:
+                    console.print(f"\n[red]✗ Upload completion failed:[/red]")
+                    console.print(f"[red]Error: {complete_error}[/red]")
+                    raise
             
             console.print(f"\n[green]✓ File sent successfully![/green]")
             
@@ -1233,7 +1286,12 @@ def sendroom(
                 console.print(f"\n[yellow]⚠ Blockchain verification pending (processing in background)[/yellow]")
         
         except Exception as e:
-            console.print(f"[red]✗ Failed to send file: {e}[/red]")
+            import traceback
+            error_msg = str(e) if str(e) else type(e).__name__
+            console.print(f"\n[red]✗ Failed to send file: {error_msg}[/red]")
+            # Only show traceback for unexpected errors
+            if "ReadTimeout" not in error_msg and "Connection" not in error_msg:
+                console.print(f"[dim]Error type: {type(e).__name__}[/dim]")
             raise typer.Exit(1)
         
         finally:

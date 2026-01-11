@@ -13,8 +13,8 @@ class APIClient:
     
     def __init__(self, base_url: str = "http://localhost:8000"):
         self.base_url = base_url
-        # Use 120s timeout for slow database queries (Supabase can be slow)
-        self.client = httpx.AsyncClient(timeout=120.0)
+        # Use 15s timeout for faster user experience (reduced from 120s)
+        self.client = httpx.AsyncClient(timeout=15.0)
     
     def _get_headers(self) -> Dict[str, str]:
         """Get headers with authorization token"""
@@ -236,13 +236,28 @@ class APIClient:
         if token:
             headers["Authorization"] = f"Bearer {token}"
         
-        response = await self.client.post(
-            f"{self.base_url}/chat/rooms/{room_id}/files/complete",
-            headers=headers,
-            data=data  # Use form data, not JSON
-        )
-        response.raise_for_status()
-        return response.json()
+        # Use extended timeout for blockchain/IPFS verification (130s)
+        # Backend waits up to 120s for small files (<50MB)
+        import httpx
+        async with httpx.AsyncClient(timeout=130.0) as client:
+            response = await client.post(
+                f"{self.base_url}/chat/rooms/{room_id}/files/complete",
+                headers=headers,
+                data=data  # Use form data, not JSON
+            )
+        
+            # Better error handling
+            try:
+                response.raise_for_status()
+            except httpx.HTTPStatusError as e:
+                error_body = ""
+                try:
+                    error_body = e.response.text
+                except:
+                    pass
+                raise Exception(f"HTTP {e.response.status_code}: {error_body or e}") from e
+            
+            return response.json()
     
     async def download_file(self, message_id: str) -> bytes:
         """Download file from a message"""

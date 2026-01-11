@@ -90,6 +90,12 @@ class MessageResponse(BaseModel):
     file_size: Optional[int] = None
     file_hash: Optional[str] = None
     
+    # Blockchain and IPFS fields
+    blockchain_tx_hash: Optional[str] = None
+    blockchain_block_number: Optional[int] = None
+    ipfs_cid: Optional[str] = None
+    certificate_url: Optional[str] = None
+    
     # Reply information
     reply_to: Optional['MessageResponse'] = None
     

@@ -660,8 +660,8 @@ class ChatCRUD:
                     .execute()
                 return result
             
-            # 30 second timeout for large message history
-            result = await asyncio.wait_for(fetch_messages(), timeout=30.0)
+            # Reduced timeout from 30s to 10s for faster response
+            result = await asyncio.wait_for(fetch_messages(), timeout=10.0)
             
             messages = []
             for msg in result.data:
