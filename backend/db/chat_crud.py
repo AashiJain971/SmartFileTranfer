@@ -431,8 +431,22 @@ class ChatCRUD:
             if result.data and len(result.data) > 0:
                 message = result.data[0]
                 
-                # Mark as sent for sender
-                await ChatCRUD.mark_message_status(message["id"], sender_id, MessageStatus.SENT.value)
+                # ✅ Create message_status for ALL room members (not just sender)
+                try:
+                    # Get all room members
+                    member_ids = await ChatCRUD.get_room_member_ids(room_id)
+                    
+                    # Create status entry for each member
+                    for member_id in member_ids:
+                        if member_id == sender_id:
+                            # Mark as sent for sender
+                            await ChatCRUD.mark_message_status(message["id"], member_id, MessageStatus.SENT.value)
+                        else:
+                            # Mark as delivered for recipients
+                            await ChatCRUD.mark_message_status(message["id"], member_id, MessageStatus.DELIVERED.value)
+                except Exception as status_err:
+                    print(f"⚠️ Failed to create message_status entries: {status_err}")
+                    # Continue even if status creation fails
                 
                 return message
             raise Exception("Failed to send message")
@@ -478,8 +492,25 @@ class ChatCRUD:
             if result.data and len(result.data) > 0:
                 message = result.data[0]
                 
-                # Mark as sent for sender
-                await ChatCRUD.mark_message_status(message["id"], sender_id, MessageStatus.SENT.value)
+                # ✅ Create message_status for ALL room members (not just sender)
+                try:
+                    # Get all room members
+                    member_ids = await ChatCRUD.get_room_member_ids(room_id)
+                    print(f"📋 Creating message_status for {len(member_ids)} room members")
+                    
+                    # Create status entry for each member
+                    for member_id in member_ids:
+                        if member_id == sender_id:
+                            # Mark as sent for sender
+                            await ChatCRUD.mark_message_status(message["id"], member_id, MessageStatus.SENT.value)
+                        else:
+                            # Mark as delivered for recipients (file is available for download)
+                            await ChatCRUD.mark_message_status(message["id"], member_id, MessageStatus.DELIVERED.value)
+                    
+                    print(f"✅ Message status created for all {len(member_ids)} members")
+                except Exception as status_err:
+                    print(f"⚠️ Failed to create message_status entries: {status_err}")
+                    # Continue even if status creation fails
                 
                 # ✅ INVALIDATE CACHE - Critical for new messages to appear!
                 try:
@@ -649,10 +680,10 @@ class ChatCRUD:
             return cached
         
         try:
-            # Single fast query - no warmup, no counting
+            # Single fast query - explicitly select blockchain fields
             async def fetch_messages():
                 result = supabase.table("messages")\
-                    .select("*, sender:users(username)")\
+                    .select("id, room_id, sender_id, message_type, content, file_session_id, file_path, file_name, file_size, file_hash, reply_to_id, created_at, updated_at, blockchain_tx_hash, blockchain_block_number, ipfs_cid, certificate_url, sender:users(username)")\
                     .eq("room_id", room_id)\
                     .order("created_at", desc=False)\
                     .limit(limit)\
@@ -681,8 +712,8 @@ class ChatCRUD:
                 
                 messages.append(message)
             
-            # Cache for 30 seconds (messages change frequently)
-            await cache.set(cache_key, messages, ttl=30)
+            # Cache for 5 seconds only (messages change frequently and need blockchain updates)
+            await cache.set(cache_key, messages, ttl=5)
             
             return messages
         except asyncio.TimeoutError:

@@ -514,6 +514,10 @@ async def get_room_messages(
                 file_name=msg.get("file_name"),
                 file_size=msg.get("file_size"),
                 file_hash=msg.get("file_hash"),
+                blockchain_tx_hash=msg.get("blockchain_tx_hash"),
+                blockchain_block_number=msg.get("blockchain_block_number"),
+                ipfs_cid=msg.get("ipfs_cid"),
+                certificate_url=msg.get("certificate_url"),
                 reply_to=reply_to,
                 created_at=msg["created_at"],
                 updated_at=msg.get("updated_at", msg["created_at"]),
@@ -1284,6 +1288,9 @@ async def complete_chat_file_upload(
         if blockchain_result:
             print(f"   blockchain TX: {blockchain_result.get('transaction_hash')}")
             print(f"   blockchain success: {blockchain_result.get('success')}")
+            print(f"   WILL PASS: {blockchain_result.get('transaction_hash') if blockchain_result and blockchain_result.get('success') else 'NONE - WILL BE NULL'}")
+        else:
+            print(f"   ❌ blockchain_result is None - message will have NULL blockchain_tx_hash")
         
         try:
             # Attempt to create chat message (3s timeout - faster fail)
@@ -1308,6 +1315,8 @@ async def complete_chat_file_upload(
             message_data = message
             message_id_for_update = message['id']  # Store for background updates
             print(f"✅ Message created: {message['id']}")
+            print(f"   📋 Message blockchain_tx_hash in response: {message.get('blockchain_tx_hash', 'NOT IN RESPONSE')}")
+            print(f"   📋 Message ipfs_cid in response: {message.get('ipfs_cid', 'NOT IN RESPONSE')}")
             
             # ✅ For large files, start background task NOW with message ID
             if file_size >= 50 * 1024 * 1024 and not (blockchain_result and ipfs_result):

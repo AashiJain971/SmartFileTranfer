@@ -23,7 +23,8 @@ app = typer.Typer(
     add_completion=False
 )
 
-console = Console()
+# Force console to use reasonable width even on narrow terminals
+console = Console(force_terminal=True, width=100)
 
 
 # ==================== VERSION ====================
@@ -435,9 +436,9 @@ def inbox(range: str = typer.Argument("1-10", help="Message range (e.g., 1-10, m
                 # Priority: downloaded > blockchain verified > pending
                 downloaded_files = config.get_credentials().get("downloaded_files", [])
                 if msg_id in downloaded_files:
-                    status = "✓ Received"
+                    status = "✓ Downloaded"
                 elif file.get("blockchain_tx"):
-                    status = "✓ Verified" 
+                    status = "✓ Received" 
                 else:
                     status = "⚠ Pending"
                 
@@ -617,42 +618,45 @@ def outbox(range: str = typer.Argument("1-10", help="Message range (e.g., 1-10, 
             table.add_column("#", style="bright_blue")  # Message number
             
             for idx, file in enumerate(paginated_files, start=start):
-                size_str = _format_size(file["size"])
-                
-                # Format timestamp in IST (Indian Standard Time)
-                from datetime import datetime, timezone, timedelta
                 try:
-                    dt = datetime.fromisoformat(file["created_at"].replace('Z', '+00:00'))
-                    # Convert to IST (UTC+5:30)
-                    ist_tz = timezone(timedelta(hours=5, minutes=30))
-                    dt_ist = dt.astimezone(ist_tz)
-                    time_str = dt_ist.strftime("%b %d, %I:%M%p")
-                except:
-                    time_str = "Unknown"
-                
-                # Determine delivery status based on blockchain verification
-                status = "✓ Sent" if file.get("blockchain_tx") else "⚠ Pending"
-                
-                # Show first 7 chars (same format as inbox, no ellipsis)
-                msg_id_short = file["message_id"][:7]
-                
-                # Determine recipient display based on room type
-                if file["room_type"] == "group":
-                    # Show room name and first 7 chars of room ID
-                    recipient_display = f"{file['room_name']} ({file['room_id'][:7]})"
-                else:
-                    # Direct chat - show recipient username
-                    recipient_display = file["recipient_username"]
-                
-                table.add_row(
-                    recipient_display,
-                    file["filename"],  # Full filename, no truncation
-                    size_str,
-                    time_str,
-                    status,
-                    msg_id_short,
-                    str(idx)
-                )
+                    size_str = _format_size(file["size"])
+                    
+                    # Format timestamp in IST (Indian Standard Time)
+                    from datetime import datetime, timezone, timedelta
+                    try:
+                        dt = datetime.fromisoformat(file["created_at"].replace('Z', '+00:00'))
+                        # Convert to IST (UTC+5:30)
+                        ist_tz = timezone(timedelta(hours=5, minutes=30))
+                        dt_ist = dt.astimezone(ist_tz)
+                        time_str = dt_ist.strftime("%b %d, %I:%M%p")
+                    except:
+                        time_str = "Unknown"
+                    
+                    # Determine delivery status based on blockchain verification
+                    status = "✓ Sent" if file.get("blockchain_tx") else "⚠ Pending"
+                    
+                    # Show first 7 chars (same format as inbox, no ellipsis)
+                    msg_id_short = file["message_id"][:7]
+                    
+                    # Determine recipient display based on room type
+                    if file["room_type"] == "group":
+                        # Show room name and first 7 chars of room ID
+                        recipient_display = f"{file['room_name']} ({file['room_id'][:7]})"
+                    else:
+                        # Direct chat - show recipient username
+                        recipient_display = file["recipient_username"]
+                    
+                    table.add_row(
+                        recipient_display,
+                        file["filename"],  # Full filename, no truncation
+                        size_str,
+                        time_str,
+                        status,
+                        msg_id_short,
+                        str(idx)
+                    )
+                except Exception as e:
+                    pass  # Skip row if error
             
             console.print(table)
             

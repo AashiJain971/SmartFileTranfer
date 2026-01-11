@@ -13,14 +13,22 @@ supabase = create_client(settings.SUPABASE_URL, settings.SUPABASE_KEY)
 async def warm_up_database_connections():
     """Pre-warm database connections to avoid cold start timeouts"""
     try:
-        # Make a simple query to establish connection
-        result = supabase.table("users").select("id").limit(1).execute()
+        # Make a simple query to establish connection (with timeout)
+        async def query_with_timeout():
+            return supabase.table("users").select("id").limit(1).execute()
+        
+        result = await asyncio.wait_for(query_with_timeout(), timeout=10.0)
         print("🔥 Database connection established and warmed up")
         
-        # Pre-warm a few more connections with different queries
-        await asyncio.sleep(0.1)
-        supabase.table("user_sessions").select("id").limit(1).execute()
-        await asyncio.sleep(0.1)
+        # Pre-warm additional tables (non-blocking - failures are OK)
+        try:
+            await asyncio.sleep(0.1)
+            async def warm_sessions():
+                return supabase.table("user_sessions").select("id").limit(1).execute()
+            await asyncio.wait_for(warm_sessions(), timeout=5.0)
+        except Exception as warm_error:
+            # Ignore secondary warm-up failures
+            print(f"⚠️  Secondary table warm-up skipped: {str(warm_error)[:50]}")
         
         return True
     except Exception as e:
