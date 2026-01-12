@@ -921,7 +921,7 @@ def rooms():
             
             console.print(table)
             console.print("\n[cyan]Commands:[/cyan]")
-            console.print("[dim]View members:    fylix members <room_id>[/dim]")
+            console.print("[dim]View members:    fylix members <room_id or name>[/dim]")
             console.print("[dim]Create group:    fylix create <name>[/dim]")
             console.print("[dim]Send to group:   fylix sendroom <room_id> <file>[/dim]")
             console.print("[dim]Delete room:     fylix delroom <room_id> (admin only)[/dim]")
@@ -1044,12 +1044,13 @@ def create(
 
 @app.command()
 def members(
-    room_id: str = typer.Argument(..., help="Room ID (from 'fylix rooms' command)")
+    room_identifier: str = typer.Argument(..., help="Room ID or room name (from 'fylix rooms' command)")
 ):
     """
     View members of a chat room
     
     Example: fylix members abc12345
+    Example: fylix members "Team Project"
     """
     async def _members():
         if not config.is_logged_in():
@@ -1059,18 +1060,42 @@ def members(
         try:
             console.print(f"\n[cyan]👥 Fetching room members...[/cyan]")
             
-            # Find room by partial ID match
+            # Find room by ID, partial ID, or name match
             rooms_response = await api_client.get_user_rooms()
             rooms = rooms_response.get("rooms", [])
             
             matching_room = None
+            current_user_id = config.get_user_id()
+            
             for room in rooms:
-                if room["id"] == room_id or room["id"].startswith(room_id):
+                # Try matching by full ID
+                if room["id"] == room_identifier:
                     matching_room = room
                     break
+                # Try matching by partial ID (first 7+ chars)
+                if room["id"].startswith(room_identifier):
+                    matching_room = room
+                    break
+                # Try matching by room name (for group chats)
+                if room.get("type") == "group":
+                    room_name = room.get("name", "").lower()
+                    if room_name == room_identifier.lower():
+                        matching_room = room
+                        break
+                # Try matching by username (for direct chats)
+                elif room.get("type") == "direct":
+                    members = room.get("members", [])
+                    for member in members:
+                        if member.get("user_id") != current_user_id:
+                            username = member.get("username", "").lower()
+                            if username == room_identifier.lower():
+                                matching_room = room
+                                break
+                    if matching_room:
+                        break
             
             if not matching_room:
-                console.print(f"[red]✗ Room {room_id} not found[/red]")
+                console.print(f"[red]✗ Room '{room_identifier}' not found[/red]")
                 console.print("[dim]Use 'fylix rooms' to see available rooms[/dim]")
                 raise typer.Exit(1)
             
@@ -1140,22 +1165,22 @@ def members(
 
 @app.command()
 def add(
-    room_id: str = typer.Argument(..., help="Room ID"),
+    room_identifier: str = typer.Argument(..., help="Room ID or room name"),
     email: str = typer.Argument(..., help="Email of user to add")
 ):
     """
     Add member to a group chat (admin only)
     
     [bold yellow]Syntax:[/bold yellow]
-      fylix add [cyan]ROOM_ID EMAIL[/cyan]
+      fylix add [cyan]ROOM_ID_OR_NAME EMAIL[/cyan]
     
     [bold green]Example:[/bold green]
       fylix add abc12345 user@email.com
-      fylix add a1b2c3 newmember@test.com
+      fylix add "Team Project" newmember@test.com
     
     [bold blue]Arguments:[/bold blue]
-      [cyan]ROOM_ID[/cyan]  Room ID (partial match supported)
-      [cyan]EMAIL[/cyan]    Email of user to add to the group
+      [cyan]ROOM_ID_OR_NAME[/cyan]  Room ID or room name
+      [cyan]EMAIL[/cyan]            Email of user to add to the group
     """
     async def _add():
         if not config.is_logged_in():
@@ -1165,18 +1190,30 @@ def add(
         try:
             console.print(f"\n[cyan]➕ Adding {email} to room...[/cyan]")
             
-            # Find room by partial ID
+            # Find room by ID, partial ID, or name
             rooms_response = await api_client.get_user_rooms()
             rooms = rooms_response.get("rooms", [])
             
             matching_room = None
             for room in rooms:
-                if room["id"] == room_id or room["id"].startswith(room_id):
+                # Try exact ID match
+                if room["id"] == room_identifier:
                     matching_room = room
                     break
+                # Try partial ID match
+                if room["id"].startswith(room_identifier):
+                    matching_room = room
+                    break
+                # Try room name match (for group chats)
+                if room.get("type") == "group":
+                    room_name = room.get("name", "").lower()
+                    if room_name == room_identifier.lower():
+                        matching_room = room
+                        break
             
             if not matching_room:
-                console.print(f"[red]✗ Room {room_id} not found[/red]")
+                console.print(f"[red]✗ Room '{room_identifier}' not found[/red]")
+                console.print("[dim]Use 'fylix rooms' to see available rooms[/dim]")
                 raise typer.Exit(1)
             
             # Add member (backend will validate admin permissions)
@@ -1268,7 +1305,7 @@ def leave(
 
 @app.command()
 def delroom(
-    room_id: str = typer.Argument(..., help="Room ID to delete")
+    room_identifier: str = typer.Argument(..., help="Room ID or room name to delete")
 ):
     """
     Delete a group chat (admin only)
@@ -1277,6 +1314,7 @@ def delroom(
     Direct chats cannot be deleted
     
     Example: fylix delroom abc1234
+    Example: fylix delroom "Team Project"
     """
     async def _delroom():
         if not config.is_logged_in():
@@ -1286,18 +1324,30 @@ def delroom(
         try:
             console.print(f"\n[cyan]🗑️  Deleting room...[/cyan]")
             
-            # Find room
+            # Find room by ID, partial ID, or name
             rooms_response = await api_client.get_user_rooms()
             rooms = rooms_response.get("rooms", [])
             
             matching_room = None
             for room in rooms:
-                if room["id"] == room_id or room["id"].startswith(room_id):
+                # Try exact ID match
+                if room["id"] == room_identifier:
                     matching_room = room
                     break
+                # Try partial ID match
+                if room["id"].startswith(room_identifier):
+                    matching_room = room
+                    break
+                # Try room name match (for group chats)
+                if room.get("type") == "group":
+                    room_name = room.get("name", "").lower()
+                    if room_name == room_identifier.lower():
+                        matching_room = room
+                        break
             
             if not matching_room:
-                console.print(f"[red]✗ Room {room_id} not found[/red]")
+                console.print(f"[red]✗ Room '{room_identifier}' not found[/red]")
+                console.print("[dim]Use 'fylix rooms' to see available rooms[/dim]")
                 raise typer.Exit(1)
             
             # Check if it's a group
@@ -1337,18 +1387,18 @@ def delroom(
 
 @app.command()
 def sendroom(
-    room_id: str = typer.Argument(..., help="Room ID to send to"),
+    room_identifier: str = typer.Argument(..., help="Room ID or room name to send to"),
     file_path: str = typer.Argument(..., help="File to send")
 ):
     """
-    Send file to a group chat (using room ID)
+    Send file to a group chat (using room ID or name)
     
     For direct chats, use: fylix send <file> <email>
-    For group chats, use:  fylix sendroom <room_id> <file>
+    For group chats, use:  fylix sendroom <room_id_or_name> <file>
     
     Examples:
         fylix sendroom abc1234 document.pdf
-        fylix sendroom f890ae9 photo.jpg
+        fylix sendroom "Team Project" photo.jpg
     """
     async def _sendroom():
         if not config.is_logged_in():
@@ -1365,18 +1415,29 @@ def sendroom(
             
             console.print(f"\n[cyan]📤 Sending to group chat...[/cyan]")
             
-            # Find room by partial ID
+            # Find room by ID, partial ID, or name
             rooms_response = await api_client.get_user_rooms()
             rooms = rooms_response.get("rooms", [])
             
             matching_room = None
             for room in rooms:
-                if room["id"] == room_id or room["id"].startswith(room_id):
+                # Try exact ID match
+                if room["id"] == room_identifier:
                     matching_room = room
                     break
+                # Try partial ID match
+                if room["id"].startswith(room_identifier):
+                    matching_room = room
+                    break
+                # Try room name match (for group chats)
+                if room.get("type") == "group":
+                    room_name = room.get("name", "").lower()
+                    if room_name == room_identifier.lower():
+                        matching_room = room
+                        break
             
             if not matching_room:
-                console.print(f"[red]✗ Room {room_id} not found[/red]")
+                console.print(f"[red]✗ Room '{room_identifier}' not found[/red]")
                 console.print("[dim]Use 'fylix rooms' to see available rooms[/dim]")
                 raise typer.Exit(1)
             
