@@ -485,10 +485,10 @@ def inbox(range: str = typer.Argument("1-10", help="Message range (e.g., 1-10, m
                 room_name = room.get("name", room_id[:8])
                 
                 try:
-                    # 30s timeout (some rooms have many messages and take time to query)
+                    # 60s timeout (some rooms have many messages and take time to query)
                     messages_response = await asyncio.wait_for(
                         api_client.get_room_messages(room_id, limit=15),  # Only fetch 15 since we display 10 max
-                        timeout=30.0
+                        timeout=60.0
                     )
                     messages = messages_response.get("messages", [])
                     
@@ -520,7 +520,7 @@ def inbox(range: str = typer.Argument("1-10", help="Message range (e.g., 1-10, m
                     
                 except asyncio.TimeoutError:
                     import sys
-                    print(f"⚠️ Warning: Skipped room '{room_name}' (timed out after 3s)", file=sys.stderr)
+                    print(f"⚠️ Warning: Skipped room '{room_name}' (timed out after 60s)", file=sys.stderr)
                     return []
                 except Exception as e:
                     # Check for auth errors - propagate these
@@ -720,10 +720,10 @@ def outbox(range: str = typer.Argument("1-10", help="Message range (e.g., 1-10, 
                         break
                 
                 try:
-                    # 30s timeout (some rooms have many messages and take time to query)
+                    # 60s timeout (some rooms have many messages and take time to query)
                     messages_response = await asyncio.wait_for(
                         api_client.get_room_messages(room_id, limit=15),  # Only fetch 15 since we display 10 max
-                        timeout=30.0
+                        timeout=60.0
                     )
                     messages = messages_response.get("messages", [])
                     
@@ -753,7 +753,7 @@ def outbox(range: str = typer.Argument("1-10", help="Message range (e.g., 1-10, 
                     
                 except asyncio.TimeoutError:
                     import sys
-                    print(f"⚠️ Warning: Skipped room '{room_name}' (timed out after 3s)", file=sys.stderr)
+                    print(f"⚠️ Warning: Skipped room '{room_name}' (timed out after 60s)", file=sys.stderr)
                     return []
                 except Exception as e:
                     # Check for auth errors - propagate these
@@ -1622,6 +1622,33 @@ def sendroom(
                         
                         while True:  # Continuous retry until success
                             attempt += 1
+                            
+                            # CHECK NETWORK BEFORE UPLOAD ATTEMPT (critical for WiFi toggle detection)
+                            try:
+                                # Socket-level network check - bypasses HTTP caching
+                                import socket
+                                sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+                                sock.settimeout(2)
+                                result = sock.connect_ex(('8.8.8.8', 53))  # Google DNS
+                                sock.close()
+                                network_available = (result == 0)
+                            except:
+                                network_available = False
+                            
+                            if not network_available:
+                                # Network is down - show pause message IMMEDIATELY
+                                if not is_paused:
+                                    console.print(f"\n[red]⏸️  Network disconnected - pausing upload[/red]")
+                                    is_paused = True
+                                
+                                progress.update(task_id, description=f"[red]⏸️  PAUSED - No network (chunk {chunk_num}/{total_chunks})[/red]")
+                                console.print(f"[yellow]Waiting for network... (will auto-resume when connected)[/yellow]")
+                                console.print(f"[dim]Press Ctrl+C to cancel[/dim]")
+                                
+                                await asyncio.sleep(3)  # Wait before rechecking
+                                continue  # Recheck network
+                            
+                            # Network is available - attempt upload
                             try:
                                 await api_client.upload_chunk(
                                     room_id=matching_room["id"],
@@ -1643,18 +1670,35 @@ def sendroom(
                             
                             except (httpx.ConnectError, httpx.NetworkError, httpx.TimeoutException,
                                     httpx.ConnectTimeout, httpx.ReadTimeout) as e:
+                                # Network error - check connectivity
                                 if not is_paused:
                                     console.print(f"\n[yellow]⚠️  Network unstable - checking connection...[/yellow]")
                                     is_paused = True
                                 
-                                # Show paused state
-                                progress.update(task_id, description=f"[red]⏸️  PAUSED - Network disconnected (chunk {chunk_num}/{total_chunks})[/red]")
-                                console.print(f"[red]⏸️  Upload paused - Network disconnected[/red]")
-                                console.print(f"[yellow]Waiting for network... (will auto-resume when connected)[/yellow]")
-                                console.print(f"[dim]Press Ctrl+C to cancel[/dim]")
+                                # Check if network is actually available
+                                try:
+                                    import socket
+                                    sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+                                    sock.settimeout(2)
+                                    result = sock.connect_ex(('8.8.8.8', 53))
+                                    sock.close()
+                                    network_available = (result == 0)
+                                except:
+                                    network_available = False
                                 
-                                await asyncio.sleep(retry_delay)
-                                continue
+                                if not network_available:
+                                    # Network is down - show pause message
+                                    progress.update(task_id, description=f"[red]⏸️  PAUSED - Network disconnected (chunk {chunk_num}/{total_chunks})[/red]")
+                                    console.print(f"[red]⏸️  Upload paused - Network disconnected[/red]")
+                                    console.print(f"[yellow]Waiting for network... (will auto-resume when connected)[/yellow]")
+                                    console.print(f"[dim]Press Ctrl+C to cancel[/dim]")
+                                    await asyncio.sleep(retry_delay)
+                                    continue  # Retry this chunk
+                                else:
+                                    # Network is back but upload failed - retry
+                                    console.print(f"[yellow]↻ Network available, retrying chunk {chunk_num}...[/yellow]")
+                                    await asyncio.sleep(1)
+                                    continue
                             
                             except httpx.HTTPStatusError as e:
                                 if not is_paused:

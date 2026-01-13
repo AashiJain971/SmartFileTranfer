@@ -247,6 +247,16 @@ class ChatCRUD:
                     print(f"❌ CRITICAL: Failed to add members after {max_attempts} attempts")
                     return False
             except Exception as e:
+                error_msg = str(e)
+                # Check if it's a duplicate key error - this means members were already added (success!)
+                if "23505" in error_msg or "duplicate key" in error_msg.lower():
+                    print(f"ℹ️ Members already exist in room (likely added in previous timeout attempt) - treating as success")
+                    # Clear caches since members are in the room
+                    await cache.delete(f"members:{room_id}")
+                    for user_id in user_ids:
+                        await cache.delete(f"rooms:{user_id}")
+                        await cache.delete(f"membership:{user_id}:{room_id}")
+                    return True
                 print(f"❌ Error adding room members: {e}")
                 return False
         
@@ -318,30 +328,27 @@ class ChatCRUD:
                     if not room:
                         return None
                     
-                    # Fetch all room data in parallel with timeouts
+                    # Fetch all room data in parallel (functions already have internal timeouts)
                     try:
-                        # Create tasks and gather them in parallel
-                        last_message_coro = ChatCRUD.get_last_message_for_room(room["id"])
-                        members_coro = ChatCRUD.get_room_members_detailed(room["id"])
-                        
-                        # Run both queries in parallel with timeout
+                        # Run both queries in parallel - no need for extra timeout wrapping
+                        # since get_last_message_for_room and get_room_members_detailed already have timeouts
                         last_message, members = await asyncio.gather(
-                            asyncio.wait_for(last_message_coro, timeout=15.0),
-                            asyncio.wait_for(members_coro, timeout=15.0),
+                            ChatCRUD.get_last_message_for_room(room["id"]),
+                            ChatCRUD.get_room_members_detailed(room["id"]),
                             return_exceptions=True
                         )
                         
                         # Handle exceptions from gather
                         if isinstance(last_message, Exception):
-                            print(f"⚠️ Error fetching last message for room {room['id'][:8]}: {last_message}")
+                            print(f"⚠️ Error fetching last message for room {room['id'][:8]}: {type(last_message).__name__}: {str(last_message)}")
                             last_message = None
                         if isinstance(members, Exception):
-                            print(f"⚠️ Error fetching members for room {room['id'][:8]}: {members}")
+                            print(f"⚠️ Error fetching members for room {room['id'][:8]}: {type(members).__name__}: {str(members)}")
                             members = []
                             
                     except Exception as e:
                         # If fetching details fails, use defaults
-                        print(f"⚠️ Error fetching details for room {room['id'][:8]}: {e}")
+                        print(f"⚠️ Error fetching details for room {room['id'][:8]}: {type(e).__name__}: {str(e)}")
                         last_message = None
                         members = []
                     
@@ -423,14 +430,23 @@ class ChatCRUD:
                 
                 members = []
                 for member in result.data:
-                    user = member["users"]
-                    members.append({
-                        "user_id": member["user_id"],
-                        "username": user["username"],
-                        "email": user["email"],
-                        "role": member["role"],
-                        "joined_at": member["joined_at"]
-                    })
+                    try:
+                        user = member.get("users")
+                        # Skip if user data is missing (deleted user, etc.)
+                        if not user:
+                            print(f"⚠️ Skipping member with missing user data in room {room_id[:8]}")
+                            continue
+                        
+                        members.append({
+                            "user_id": member["user_id"],
+                            "username": user.get("username", "Unknown"),
+                            "email": user.get("email", ""),
+                            "role": member.get("role", "member"),
+                            "joined_at": member.get("joined_at")
+                        })
+                    except Exception as parse_error:
+                        print(f"⚠️ Error parsing member data: {parse_error}")
+                        continue
                 
                 # Only cache if we got valid results
                 if members:
@@ -449,10 +465,10 @@ class ChatCRUD:
                     print(f"⏱️ {error_type} fetching members (attempt {attempt + 1}/{max_attempts}), retrying in {wait_time}s...")
                     await asyncio.sleep(wait_time)
                 else:
-                    print(f"❌ CRITICAL: Failed to fetch members after {max_attempts} attempts ({error_type})")
+                    print(f"❌ CRITICAL: Failed to fetch members for room {room_id[:8]} after {max_attempts} attempts ({error_type})")
                     return []
             except Exception as e:
-                print(f"❌ Error getting room members: {e}")
+                print(f"❌ Error getting room members for {room_id[:8]}: {type(e).__name__}: {str(e)}")
                 # Don't retry on non-timeout errors
                 return []
         
@@ -1037,7 +1053,9 @@ class ChatCRUD:
             
             if result.data and len(result.data) > 0:
                 message = result.data[0]
-                message["sender_username"] = message["sender"]["username"] if message.get("sender") else "Unknown"
+                # Safely get sender info
+                sender = message.get("sender")
+                message["sender_username"] = sender.get("username") if sender else "Unknown"
                 
                 # Cache for 30 seconds (messages change frequently)
                 await cache.set(cache_key, message, ttl=30)
@@ -1047,7 +1065,7 @@ class ChatCRUD:
             print(f"⚠️ Timeout fetching last message for room {room_id[:8]}, skipping")
             return None
         except Exception as e:
-            print(f"🔧 ERROR: get_last_message_for_room failed: {e}")
+            print(f"🔧 ERROR: get_last_message_for_room failed for {room_id[:8]}: {type(e).__name__}: {str(e)}")
             return None
     
     # ✅ MESSAGE STATUS OPERATIONS (READ RECEIPTS)
