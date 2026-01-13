@@ -17,16 +17,17 @@ class Config:
         self.config_dir = Path.home() / ".fylix"
         self.credentials_file = self.config_dir / "credentials.json"
         self.transfers_file = self.config_dir / "transfers.json"
+        self.download_history_file = self.config_dir / "download_history.json"
         
         # Create config directory if it doesn't exist
         self.config_dir.mkdir(parents=True, exist_ok=True)
     
     def save_credentials(self, email: str, access_token: str, refresh_token: str, user_id: str, username: str):
         """Store authentication credentials locally"""
-        # Preserve existing downloaded_files and sent_files if they exist
-        existing_creds = self.get_credentials()
-        downloaded_files = existing_creds.get("downloaded_files", []) if existing_creds else []
-        sent_files = existing_creds.get("sent_files", []) if existing_creds else []
+        # Get download history from separate persistent file (survives logout)
+        download_history = self.get_download_history()
+        downloaded_files = download_history.get("downloaded_files", [])
+        sent_files = download_history.get("sent_files", [])
         
         credentials = {
             "email": email,
@@ -58,7 +59,15 @@ class Config:
             return None
     
     def clear_credentials(self):
-        """Remove stored credentials (logout)"""
+        """Remove stored credentials (logout) - preserves download history"""
+        # Save download history before clearing credentials
+        creds = self.get_credentials()
+        if creds:
+            self.save_download_history(
+                creds.get("downloaded_files", []),
+                creds.get("sent_files", [])
+            )
+        
         if self.credentials_file.exists():
             self.credentials_file.unlink()
     
@@ -121,6 +130,60 @@ class Config:
             del transfers[transfer_id]
             with open(self.transfers_file, 'w') as f:
                 json.dump(transfers, f, indent=2)
+    
+    def get_download_history(self) -> Dict[str, Any]:
+        """Get persistent download history (survives logout/login)"""
+        if not self.download_history_file.exists():
+            return {"downloaded_files": [], "sent_files": []}
+        
+        try:
+            with open(self.download_history_file, 'r') as f:
+                return json.load(f)
+        except Exception:
+            return {"downloaded_files": [], "sent_files": []}
+    
+    def save_download_history(self, downloaded_files: list, sent_files: list):
+        """Save download history to persistent file"""
+        history = {
+            "downloaded_files": downloaded_files,
+            "sent_files": sent_files,
+            "last_updated": datetime.utcnow().isoformat()
+        }
+        
+        with open(self.download_history_file, 'w') as f:
+            json.dump(history, f, indent=2)
+    
+    def add_downloaded_file(self, message_id: str):
+        """Add a file to download history"""
+        history = self.get_download_history()
+        downloaded_files = history.get("downloaded_files", [])
+        
+        if message_id not in downloaded_files:
+            downloaded_files.append(message_id)
+            self.save_download_history(downloaded_files, history.get("sent_files", []))
+            
+            # Also update credentials if logged in
+            creds = self.get_credentials()
+            if creds:
+                creds["downloaded_files"] = downloaded_files
+                with open(self.credentials_file, 'w') as f:
+                    json.dump(creds, f, indent=2)
+    
+    def add_sent_file(self, message_id: str):
+        """Add a file to sent history"""
+        history = self.get_download_history()
+        sent_files = history.get("sent_files", [])
+        
+        if message_id not in sent_files:
+            sent_files.append(message_id)
+            self.save_download_history(history.get("downloaded_files", []), sent_files)
+            
+            # Also update credentials if logged in
+            creds = self.get_credentials()
+            if creds:
+                creds["sent_files"] = sent_files
+                with open(self.credentials_file, 'w') as f:
+                    json.dump(creds, f, indent=2)
 
 
 # Global config instance

@@ -1603,16 +1603,8 @@ def sendroom(
             if message_id:
                 console.print(f"[dim]Message ID: {message_id}[/dim]")
                 
-                # Track sent file in credentials for persistence
-                creds = config.get_credentials()
-                if creds:
-                    sent_files = creds.get("sent_files", [])
-                    if message_id not in sent_files:
-                        sent_files.append(message_id)
-                        creds["sent_files"] = sent_files
-                        # Write directly to file to preserve all fields
-                        with open(config.credentials_file, 'w') as f:
-                            json.dump(creds, f, indent=2)
+                # Track sent file in persistent history
+                config.add_sent_file(message_id)
             
             # Show blockchain and IPFS info if available
             if ipfs_data and ipfs_data.get('success'):
@@ -1770,16 +1762,8 @@ def download(
                 expected_ipfs_cid=file_info.get("ipfs_cid")
             )
             
-            # Mark as downloaded in config (update credentials file directly)
-            creds = config.get_credentials()
-            if creds:
-                downloaded_files = creds.get("downloaded_files", [])
-                if file_info["id"] not in downloaded_files:
-                    downloaded_files.append(file_info["id"])
-                    creds["downloaded_files"] = downloaded_files
-                    # Write directly to file instead of using save_credentials
-                    with open(config.credentials_file, 'w') as f:
-                        json.dump(creds, f, indent=2)
+            # Mark as downloaded in persistent download history
+            config.add_downloaded_file(file_info["id"])
             
             console.print(f"\n[green]✓ File downloaded and verified[/green]")
         
