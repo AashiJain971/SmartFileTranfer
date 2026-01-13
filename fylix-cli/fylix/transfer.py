@@ -8,6 +8,8 @@ from pathlib import Path
 from typing import Optional
 from rich.progress import Progress, SpinnerColumn, BarColumn, TextColumn, TimeRemainingColumn
 from rich.console import Console
+import socket
+import httpx
 
 from fylix.api_client import api_client
 from fylix.config import config
@@ -20,6 +22,18 @@ class FileTransferManager:
     
     def __init__(self):
         self.chunk_size = 1024 * 1024  # 1MB default
+        self.is_paused = False
+        self.pause_reason = ""
+    
+    async def check_network_connectivity(self) -> bool:
+        """Check if network is available by trying to reach backend"""
+        try:
+            # Try to ping the backend server with short timeout
+            async with httpx.AsyncClient(timeout=3.0) as client:
+                response = await client.get(f"{api_client.base_url}/")
+                return True
+        except:
+            return False
     
     def calculate_file_hash(self, file_path: Path) -> str:
         """Calculate SHA-256 hash of entire file"""
@@ -109,24 +123,73 @@ class FileTransferManager:
                 console.print(f"[red]✗[/red] Transfer state not found for {transfer_id}")
                 return None
         else:
-            # Create/get direct room with recipient
+            # Create/get direct room with recipient - with network resilience
             console.print(f"[cyan]🔗 Connecting to {recipient_email}...[/cyan]")
-            room_response = await api_client.create_direct_room(recipient_email)
-            room_id = room_response["id"]  # Backend returns ChatRoomResponse with id at top level
+            room_id = None
+            connection_attempts = 0
+            
+            while not room_id:
+                try:
+                    room_response = await api_client.create_direct_room(recipient_email)
+                    room_id = room_response["id"]  # Backend returns ChatRoomResponse with id at top level
+                    if connection_attempts > 0:
+                        console.print(f"[green]✓ Connected successfully[/green]")
+                except (httpx.ConnectError, httpx.NetworkError, httpx.TimeoutException, 
+                        httpx.ConnectTimeout, httpx.ReadTimeout, httpx.HTTPStatusError) as e:
+                    connection_attempts += 1
+                    if connection_attempts == 1:
+                        console.print(f"[yellow]⚠️  Network issue connecting to {recipient_email}...[/yellow]")
+                        console.print(f"[yellow]Checking network connectivity...[/yellow]")
+                    
+                    # Check if network is available
+                    network_available = await self.check_network_connectivity()
+                    
+                    if not network_available:
+                        console.print(f"[red]⏸️  Network disconnected - waiting for connection...[/red]")
+                        console.print(f"[dim]Will auto-retry when network returns (attempt {connection_attempts})[/dim]")
+                        await asyncio.sleep(3)
+                    else:
+                        console.print(f"[yellow]↻ Network available, retrying... (attempt {connection_attempts})[/yellow]")
+                        await asyncio.sleep(2)
+                except Exception as e:
+                    console.print(f"[red]✗ Failed to connect: {str(e)}[/red]")
+                    console.print(f"[yellow]Retrying in 3 seconds... (attempt {connection_attempts + 1})[/yellow]")
+                    await asyncio.sleep(3)
+                    connection_attempts += 1
             
             # Calculate total chunks BEFORE starting upload (like websocket_test.html)
             total_chunks = (file_size + self.chunk_size - 1) // self.chunk_size
             
-            # Start upload session
-            start_response = await api_client.start_file_upload(
-                room_id=room_id,
-                filename=filename,
-                file_size=file_size,
-                file_hash=file_hash,
-                total_chunks=total_chunks
-            )
+            # Start upload session with infinite retry on network errors
+            console.print(f"[cyan]📦 Starting upload session...[/cyan]")
+            file_id = None
+            start_attempts = 0
             
-            file_id = start_response["file_id"]
+            while not file_id:
+                try:
+                    start_response = await api_client.start_file_upload(
+                        room_id=room_id,
+                        filename=filename,
+                        file_size=file_size,
+                        file_hash=file_hash,
+                        total_chunks=total_chunks
+                    )
+                    file_id = start_response["file_id"]
+                    if start_attempts > 0:
+                        console.print(f"[green]✓ Upload session started successfully[/green]")
+                except (httpx.ConnectError, httpx.NetworkError, httpx.TimeoutException,
+                        httpx.ConnectTimeout, httpx.ReadTimeout, httpx.HTTPStatusError) as e:
+                    start_attempts += 1
+                    if start_attempts == 1:
+                        console.print(f"[yellow]⚠️  Network issue starting upload...[/yellow]")
+                    console.print(f"[yellow]↻ Retrying... (attempt {start_attempts})[/yellow]")
+                    console.print(f"[dim]Press Ctrl+C to cancel[/dim]")
+                    await asyncio.sleep(2)
+                except Exception as e:
+                    console.print(f"[yellow]⚠️  Error: {str(e)}[/yellow]")
+                    console.print(f"[yellow]Retrying in 3 seconds... (attempt {start_attempts + 1})[/yellow]")
+                    await asyncio.sleep(3)
+                    start_attempts += 1
             
             # ✅ USE BACKEND'S DYNAMIC CHUNK SIZE (like websocket_test.html)
             if "chunk_size" in start_response:
@@ -163,8 +226,9 @@ class FileTransferManager:
             "status": "uploading"
         })
         
-        # Upload chunks with progress bar
+        # Upload chunks with progress bar and network monitoring
         console.print(f"\n[cyan]📦 Uploading {total_chunks} chunks...[/cyan]")
+        console.print(f"[dim]Network: Monitoring connection for auto-resume[/dim]")
         
         with Progress(
             SpinnerColumn(),
@@ -186,9 +250,12 @@ class FileTransferManager:
                     chunk_data = f.read(self.chunk_size)
                     chunk_hash = self.calculate_chunk_hash(chunk_data)
                     
-                    # AUTO-RESUME: Retry on network errors
-                    max_retries = 3
-                    for attempt in range(max_retries):
+                    # AUTO-RESUME: Infinite retry until success or user types 'exit'
+                    retry_delay = 2
+                    attempt = 0
+                    
+                    while True:  # Continuous retry until success
+                        attempt += 1
                         try:
                             await api_client.upload_chunk(
                                 room_id=room_id,
@@ -198,6 +265,12 @@ class FileTransferManager:
                                 chunk_data=chunk_data,
                                 chunk_hash=chunk_hash
                             )
+                            
+                            # Success - clear any pause state
+                            if self.is_paused:
+                                self.is_paused = False
+                                console.print(f"\n[green]✓ Network restored - resuming upload[/green]")
+                                progress.update(task, description=f"Uploading {filename}")
                             
                             # Update state for manual resume
                             uploaded_chunks.add(chunk_num)
@@ -211,14 +284,69 @@ class FileTransferManager:
                             progress.update(task, advance=1)
                             break
                         
-                        except Exception as e:
-                            if attempt < max_retries - 1:
-                                await asyncio.sleep(1 * (attempt + 1))  # Exponential backoff
+                        except (httpx.ConnectError, httpx.NetworkError, httpx.TimeoutException, httpx.ConnectTimeout, httpx.ReadTimeout) as e:
+                            # Network error - check connectivity and auto-pause
+                            if not self.is_paused:
+                                console.print(f"\n[yellow]⚠️  Network unstable - checking connection...[/yellow]")
+                                self.is_paused = True
+                            
+                            # Check if network is available
+                            network_available = await self.check_network_connectivity()
+                            
+                            if not network_available:
+                                # Network is down - show pause message
+                                progress.update(task, description=f"[red]⏸️  PAUSED - Network disconnected (chunk {chunk_num}/{total_chunks})[/red]")
+                                console.print(f"[red]⏸️  Upload paused - Network disconnected[/red]")
+                                console.print(f"[yellow]Waiting for network... (will auto-resume when connected)[/yellow]")
+                                console.print(f"[dim]Press Ctrl+C to cancel[/dim]")
+                                
+                                # Wait before retry
+                                await asyncio.sleep(retry_delay)
+                                
+                                # Query server for last uploaded chunk when network returns
+                                try:
+                                    uploaded_status = await api_client.get_uploaded_chunks(file_id)
+                                    if uploaded_status and 'uploaded_chunks' in uploaded_status:
+                                        server_chunks = set(uploaded_status['uploaded_chunks'])
+                                        if server_chunks != uploaded_chunks:
+                                            console.print(f"[cyan]🔄 Syncing with server state...[/cyan]")
+                                            uploaded_chunks = server_chunks
+                                            config.update_transfer_status(
+                                                transfer_id,
+                                                "uploading",
+                                                uploaded_chunks=list(uploaded_chunks)
+                                            )
+                                except:
+                                    pass  # Server unreachable, will retry
+                                
+                                continue  # Retry this chunk
                             else:
-                                console.print(f"\n[red]✗ Upload failed at chunk {chunk_num}: {e}[/red]")
-                                console.print(f"[yellow]Run 'fylix resume {transfer_id}' to continue[/yellow]")
-                                config.update_transfer_status(transfer_id, "paused")
-                                raise
+                                # Network is back but upload failed - retry
+                                console.print(f"[yellow]↻ Network available, retrying chunk {chunk_num}...[/yellow]")
+                                await asyncio.sleep(1)
+                                continue
+                        
+                        except httpx.HTTPStatusError as e:
+                            # HTTP errors (including 500) - treat as network/server issues
+                            if not self.is_paused:
+                                console.print(f"\n[yellow]⚠️  Server error (HTTP {e.response.status_code}) - retrying...[/yellow]")
+                                self.is_paused = True
+                            
+                            progress.update(task, description=f"[yellow]⏸️  Server issue - retrying chunk {chunk_num}/{total_chunks}[/yellow]")
+                            await asyncio.sleep(retry_delay)
+                            continue
+                        
+                        except Exception as e:
+                            # Other errors - log but keep retrying
+                            error_msg = str(e)
+                            if not self.is_paused:
+                                console.print(f"\n[yellow]⚠️  Error: {error_msg}[/yellow]")
+                                console.print(f"[yellow]Retrying chunk {chunk_num}...[/yellow]")
+                                self.is_paused = True
+                            
+                            progress.update(task, description=f"[yellow]⏸️  Retrying chunk {chunk_num}/{total_chunks}[/yellow]")
+                            await asyncio.sleep(retry_delay)
+                            continue
         
         # Complete upload - triggers IPFS and blockchain
         console.print("\n[cyan]🔗 Finalizing transfer (IPFS + Blockchain)...[/cyan]")
@@ -328,16 +456,43 @@ class FileTransferManager:
         """
         
         console.print(f"\n[cyan]📥 Downloading file...[/cyan]")
+        console.print(f"[dim]Network: Auto-retry enabled (Press Ctrl+C to cancel)[/dim]")
         
         # Create output directory
         output_dir.mkdir(parents=True, exist_ok=True)
         
-        # Download file
-        try:
-            file_data = await api_client.download_file(message_id)
-        except Exception as e:
-            console.print(f"[red]✗ Download failed: {e}[/red]")
-            raise
+        # Download file with infinite retry on network errors
+        file_data = None
+        download_attempt = 0
+        
+        while file_data is None:
+            download_attempt += 1
+            try:
+                file_data = await api_client.download_file(message_id)
+                if download_attempt > 1:
+                    console.print(f"[green]✓ Download successful after {download_attempt} attempts[/green]")
+            except (httpx.ConnectError, httpx.NetworkError, httpx.TimeoutException,
+                    httpx.ConnectTimeout, httpx.ReadTimeout) as e:
+                console.print(f"[yellow]⚠️  Network error during download (attempt {download_attempt})[/yellow]")
+                console.print(f"[red]⏸️  Download paused - Network disconnected[/red]")
+                console.print(f"[yellow]Waiting for network... (will auto-resume when connected)[/yellow]")
+                console.print(f"[dim]Press Ctrl+C to cancel[/dim]")
+                await asyncio.sleep(3)
+            except httpx.HTTPStatusError as e:
+                console.print(f"[yellow]⚠️  Server error (HTTP {e.response.status_code}) - retrying...[/yellow]")
+                console.print(f"[yellow]Attempt {download_attempt}, retrying in 3 seconds...[/yellow]")
+                await asyncio.sleep(3)
+            except Exception as e:
+                # Check if it's a network-related error
+                error_str = str(e).lower()
+                if any(x in error_str for x in ['network', 'connection', 'timeout', 'unreachable']):
+                    console.print(f"[yellow]⚠️  Network issue: {str(e)}[/yellow]")
+                    console.print(f"[yellow]Retrying in 3 seconds... (attempt {download_attempt})[/yellow]")
+                    await asyncio.sleep(3)
+                else:
+                    # Non-network error - fail
+                    console.print(f"[red]✗ Download failed: {e}[/red]")
+                    raise
         
         # Save to disk (temporary until verified)
         temp_path = output_dir / f".{message_id}.tmp"
@@ -353,31 +508,48 @@ class FileTransferManager:
         actual_hash = self.calculate_file_hash(temp_path)
         console.print(f"[dim]File Hash: {actual_hash[:16]}...[/dim]")
         
-        # 2. Get blockchain proof
+        # 2. Get blockchain proof with network retry
         blockchain_hash = None
         blockchain_ipfs = None
         blockchain_proof = None
+        proof_attempt = 0
+        
+        while blockchain_proof is None:
+            proof_attempt += 1
+            try:
+                blockchain_proof = await api_client.get_blockchain_proof(actual_hash)
+                blockchain_hash = blockchain_proof.get("file_hash")
+                blockchain_ipfs = blockchain_proof.get("ipfs_cid")
+                break  # Success
+            except (httpx.ConnectError, httpx.NetworkError, httpx.TimeoutException,
+                    httpx.ConnectTimeout, httpx.ReadTimeout):
+                if proof_attempt == 1:
+                    console.print(f"[yellow]⚠️  Network issue fetching blockchain proof, retrying...[/yellow]")
+                await asyncio.sleep(2)
+                continue
+            except Exception as e:
+                # Non-network errors - break and handle below
+                blockchain_proof = {}  # Set to empty dict to exit loop
+                break
+        
+        # Handle blockchain proof result
         try:
-            blockchain_proof = await api_client.get_blockchain_proof(actual_hash)
-            blockchain_hash = blockchain_proof.get("file_hash")
-            blockchain_ipfs = blockchain_proof.get("ipfs_cid")
+            if blockchain_hash:
             
-            console.print(f"[dim]Blockchain Hash: {blockchain_hash[:16] if blockchain_hash else 'N/A'}...[/dim]")
-            
-            if blockchain_ipfs:
-                console.print(f"[dim]IPFS CID: {blockchain_ipfs}[/dim]")
-                console.print(f"[cyan]📎 Pinata: https://gateway.pinata.cloud/ipfs/{blockchain_ipfs}[/cyan]")
+                console.print(f"[dim]Blockchain Hash: {blockchain_hash[:16]}...[/dim]")
+                
+                if blockchain_ipfs:
+                    console.print(f"[dim]IPFS CID: {blockchain_ipfs}[/dim]")
+                    console.print(f"[cyan]📎 Pinata: https://gateway.pinata.cloud/ipfs/{blockchain_ipfs}[/cyan]")
+                else:
+                    console.print(f"[dim]IPFS CID: N/A[/dim]")
             else:
-                console.print(f"[dim]IPFS CID: N/A[/dim]")
-        except Exception as e:
-            # Old files don't have blockchain records - that's OK
-            if "404" in str(e) or "Not Found" in str(e):
-                console.print(f"[yellow]⚠ No blockchain record (old file)[/yellow]")
+                # No blockchain proof found
+                console.print(f"[yellow]⚠ No blockchain record (old file or not yet processed)[/yellow]")
                 console.print(f"[dim]Blockchain Hash: N/A[/dim]")
                 console.print(f"[dim]IPFS CID: N/A[/dim]")
-            else:
-                # Other errors should be shown
-                console.print(f"[yellow]⚠ Blockchain verification unavailable: {e}[/yellow]")
+        except:
+            pass  # Ignore any remaining errors
         
         # 3. Verify hash match (always runs, not just in except block)
         if expected_hash and actual_hash != expected_hash:

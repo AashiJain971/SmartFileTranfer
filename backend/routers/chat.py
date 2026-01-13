@@ -70,30 +70,57 @@ async def create_chat_room(
                     pass
             
             if other_user:
-                # Check if direct chat already exists
-                existing_room = await ChatCRUD.find_direct_chat_room(current_user["id"], other_user["id"])
+                # Check if direct chat already exists (with timeout protection)
+                existing_room = None
+                try:
+                    existing_room = await asyncio.wait_for(
+                        ChatCRUD.find_direct_chat_room(current_user["id"], other_user["id"]),
+                        timeout=15.0
+                    )
+                except asyncio.TimeoutError:
+                    print(f"⚠️ Timeout finding existing room, will create new one")
+                except Exception as e:
+                    print(f"❌ Error finding direct chat room: {e}")
+                
                 if existing_room:
                     print(f"✅ Found existing direct chat room: {existing_room['id']}")
                     
-                    # Return existing room with member details
-                    members = await ChatCRUD.get_room_members_detailed(existing_room["id"])
-                    return ChatRoomResponse(
-                        id=existing_room["id"],
-                        name=existing_room["name"],
-                        type=ChatRoomType(existing_room["type"]),
-                        created_by=existing_room["created_by"],
-                        created_by_username=existing_room.get("created_by_username", "Unknown"),
-                        members=[
-                            ChatRoomMember(
-                                user_id=m["user_id"],
-                                username=m["username"],
-                                role=UserRole(m["role"]),
-                                joined_at=m["joined_at"]
-                            ) for m in members
-                        ],
-                        created_at=existing_room["created_at"],
-                        updated_at=existing_room["updated_at"]
-                    )
+                    # Return existing room with member details (with timeout)
+                    try:
+                        members = await asyncio.wait_for(
+                            ChatCRUD.get_room_members_detailed(existing_room["id"]),
+                            timeout=10.0
+                        )
+                        return ChatRoomResponse(
+                            id=existing_room["id"],
+                            name=existing_room["name"],
+                            type=ChatRoomType(existing_room["type"]),
+                            created_by=existing_room["created_by"],
+                            created_by_username=existing_room.get("created_by_username", "Unknown"),
+                            members=[
+                                ChatRoomMember(
+                                    user_id=m["user_id"],
+                                    username=m["username"],
+                                    role=UserRole(m["role"]),
+                                    joined_at=m["joined_at"]
+                                ) for m in members
+                            ],
+                            created_at=existing_room["created_at"],
+                            updated_at=existing_room["updated_at"]
+                        )
+                    except asyncio.TimeoutError:
+                        # Return minimal room info if member details timeout
+                        print(f"⚠️ Timeout getting member details, returning minimal room info")
+                        return ChatRoomResponse(
+                            id=existing_room["id"],
+                            name=existing_room["name"],
+                            type=ChatRoomType(existing_room["type"]),
+                            created_by=existing_room["created_by"],
+                            created_by_username=existing_room.get("created_by_username", "Unknown"),
+                            members=[],
+                            created_at=existing_room["created_at"],
+                            updated_at=existing_room["updated_at"]
+                        )
                 else:
                     print(f"🆕 No existing direct chat found, creating new room...")
             else:
@@ -251,25 +278,74 @@ async def create_chat_room(
                 )
         
         if member_ids:
-            success = await ChatCRUD.add_room_members(room["id"], member_ids)
-            if not success:
-                # Clean up - delete the room since we couldn't add members
-                print(f"❌ Failed to add members, cleaning up room {room['id'][:8]}...")
+            try:
+                success = await asyncio.wait_for(
+                    ChatCRUD.add_room_members(room["id"], member_ids),
+                    timeout=15.0
+                )
+                if not success:
+                    # Clean up - delete the room since we couldn't add members
+                    print(f"❌ Failed to add members, cleaning up room {room['id'][:8]}...")
+                    raise HTTPException(
+                        status_code=504,
+                        detail="Database timeout adding members. Please try again in a few seconds."
+                    )
+            except asyncio.TimeoutError:
+                print(f"❌ Timeout adding members to room {room['id'][:8]}")
                 raise HTTPException(
                     status_code=504,
-                    detail="Database timeout adding members. Please try again in a few seconds."
+                    detail="Database timeout adding members. Please try again."
+                )
+            except Exception as e:
+                print(f"❌ Error adding members: {str(e)}")
+                raise HTTPException(
+                    status_code=500,
+                    detail=f"Failed to add members: {str(e)}"
                 )
         
-        # Get complete room info for response
-        members = await ChatCRUD.get_room_members_detailed(room["id"])
+        # Get complete room info for response with timeout protection
+        try:
+            members = await asyncio.wait_for(
+                ChatCRUD.get_room_members_detailed(room["id"]),
+                timeout=10.0
+            )
+        except asyncio.TimeoutError:
+            print(f"⚠️ Timeout getting room members for {room['id'][:8]}, using minimal response")
+            # Return minimal response without members
+            return ChatRoomResponse(
+                id=room["id"],
+                name=room["name"],
+                type=ChatRoomType(room["type"]),
+                created_by=room["created_by"],
+                created_by_username=current_user["username"],
+                members=[],
+                created_at=room["created_at"],
+                updated_at=room["updated_at"]
+            )
+        except Exception as e:
+            print(f"❌ Error getting room members: {str(e)}")
+            # Return minimal response
+            return ChatRoomResponse(
+                id=room["id"],
+                name=room["name"],
+                type=ChatRoomType(room["type"]),
+                created_by=room["created_by"],
+                created_by_username=current_user["username"],
+                members=[],
+                created_at=room["created_at"],
+                updated_at=room["updated_at"]
+            )
         
         # ✅ INVALIDATE CACHE FOR ALL ROOM MEMBERS
         from services.cache_service import cache
         for member in members:
             member_id = member["user_id"]
             cache_key = f"rooms:{member_id}"
-            await cache.delete(cache_key)
-            print(f"🗑️ Cleared cache for member: {member.get('username', member_id[:8])}")
+            try:
+                await asyncio.wait_for(cache.delete(cache_key), timeout=1.0)
+                print(f"🗑️ Cleared cache for member: {member.get('username', member_id[:8])}")
+            except:
+                pass  # Cache deletion is not critical
         
         room_response = ChatRoomResponse(
             id=room["id"],

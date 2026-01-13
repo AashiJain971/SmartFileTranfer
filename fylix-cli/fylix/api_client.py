@@ -214,6 +214,19 @@ class APIClient:
         response.raise_for_status()
         return response.json()
     
+    async def get_uploaded_chunks(self, file_id: str) -> Dict[str, Any]:
+        """Query server for list of uploaded chunks (for resume after network loss)"""
+        try:
+            response = await self.client.get(
+                f"{self.base_url}/upload/uploaded_chunks/{file_id}",
+                headers=self._get_headers()
+            )
+            response.raise_for_status()
+            return response.json()
+        except Exception as e:
+            # If endpoint doesn't exist or server is down, return empty
+            return {"uploaded_chunks": []}
+    
     async def complete_upload(
         self,
         room_id: str,

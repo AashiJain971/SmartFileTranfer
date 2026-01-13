@@ -74,10 +74,32 @@ class ChatCRUD:
                 else:
                     print(f"❌ CRITICAL: Room creation failed after {max_attempts} attempts ({error_type})")
                     raise Exception(f"Database unreachable ({error_type}). Please try again in a minute.")
+            except OSError as e:
+                # Network errors like DNS resolution ([Errno 8]), connection refused, etc.
+                last_error = e
+                if attempt < max_attempts - 1:
+                    wait_time = 2.0 * (attempt + 1)
+                    print(f"⏱️ Network error creating room: {str(e)} (attempt {attempt + 1}/{max_attempts}), retrying in {wait_time}s...")
+                    await asyncio.sleep(wait_time)
+                else:
+                    print(f"❌ CRITICAL: Room creation failed after {max_attempts} attempts due to network error")
+                    raise Exception(f"Network error - please check your internet connection and try again.")
             except Exception as e:
-                # Non-timeout errors - don't retry
-                print(f"❌ Room creation error: {str(e)}")
-                raise Exception(f"Failed to create chat room: {str(e)}")
+                # Non-timeout errors - check if it's a network-related error
+                error_str = str(e).lower()
+                if any(x in error_str for x in ['network', 'dns', 'resolve', 'connection', 'unreachable']):
+                    # Network error - retry
+                    if attempt < max_attempts - 1:
+                        wait_time = 2.0 * (attempt + 1)
+                        print(f"⏱️ Network issue: {str(e)} (attempt {attempt + 1}/{max_attempts}), retrying in {wait_time}s...")
+                        await asyncio.sleep(wait_time)
+                    else:
+                        print(f"❌ CRITICAL: Room creation failed after {max_attempts} attempts")
+                        raise Exception(f"Network error: {str(e)}")
+                else:
+                    # Non-network error - don't retry
+                    print(f"❌ Room creation error: {str(e)}")
+                    raise Exception(f"Failed to create chat room: {str(e)}")
         
         # Should never reach here, but just in case
         raise Exception("Database timeout - please try again.")
@@ -633,6 +655,8 @@ class ChatCRUD:
                 # ✅ INVALIDATE CACHE - Critical for new messages to appear!
                 try:
                     print(f"🔄 Invalidating message cache for room {room_id}...")
+                    
+                    # 1. Clear room-level message cache
                     patterns = [
                         f"messages:{room_id}:*",
                         f"room:{room_id}:*"
@@ -640,6 +664,17 @@ class ChatCRUD:
                     for pattern in patterns:
                         deleted = await cache.delete_pattern(pattern)
                         print(f"   Deleted cache pattern: {pattern} ({deleted} keys)")
+                    
+                    # 2. Clear inbox cache for ALL room members
+                    member_ids = await ChatCRUD.get_room_member_ids(room_id)
+                    for member_id in member_ids:
+                        inbox_key = f"inbox:{member_id}"
+                        outbox_key = f"outbox:{member_id}"
+                        await cache.delete(inbox_key)
+                        await cache.delete(outbox_key)
+                        print(f"   Cleared inbox/outbox cache for member {member_id[:8]}...")
+                    
+                    print(f"✅ Cache invalidation complete for {len(member_ids)} members")
                 except Exception as cache_err:
                     print(f"⚠️ Cache invalidation failed: {cache_err}")
                 
@@ -731,7 +766,14 @@ class ChatCRUD:
                     deleted = await cache.delete_pattern(pattern)
                     print(f"   Deleted cache pattern: {pattern} ({deleted} keys)")
                 
-                print(f"✅ Cache invalidated for room {room_id}")
+                # Also clear inbox/outbox cache for all members
+                member_ids = await ChatCRUD.get_room_member_ids(room_id)
+                for member_id in member_ids:
+                    await cache.delete(f"inbox:{member_id}")
+                    await cache.delete(f"outbox:{member_id}")
+                    print(f"   Cleared inbox/outbox cache for member {member_id[:8]}...")
+                
+                print(f"✅ Cache invalidated for room {room_id} and {len(member_ids)} members")
             
             return True
         except Exception as e:

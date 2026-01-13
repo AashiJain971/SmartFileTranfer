@@ -1416,6 +1416,8 @@ def sendroom(
         try:
             # Verify file exists
             from pathlib import Path
+            import httpx
+            import asyncio
             file = Path(file_path)
             if not file.exists():
                 console.print(f"[red]✗ File not found: {file_path}[/red]")
@@ -1503,16 +1505,35 @@ def sendroom(
             console.print(f"\n[cyan]Starting chunked upload...[/cyan]")
             console.print(f"[dim]Chunks: {total_chunks}, Hash: {file_hash[:16]}...[/dim]")
             
-            # Start upload
-            start_response = await api_client.start_file_upload(
-                room_id=matching_room["id"],
-                filename=file.name,
-                file_size=file_size,
-                file_hash=file_hash,
-                total_chunks=total_chunks
-            )
+            # Start upload with infinite retry on network errors
+            file_id = None
+            start_attempts = 0
             
-            file_id = start_response["file_id"]
+            while not file_id:
+                try:
+                    start_response = await api_client.start_file_upload(
+                        room_id=matching_room["id"],
+                        filename=file.name,
+                        file_size=file_size,
+                        file_hash=file_hash,
+                        total_chunks=total_chunks
+                    )
+                    file_id = start_response["file_id"]
+                    if start_attempts > 0:
+                        console.print(f"[green]✓ Connected successfully[/green]")
+                except (httpx.ConnectError, httpx.NetworkError, httpx.TimeoutException,
+                        httpx.ConnectTimeout, httpx.ReadTimeout, httpx.HTTPStatusError) as e:
+                    start_attempts += 1
+                    if start_attempts == 1:
+                        console.print(f"[yellow]⚠️  Network issue starting upload...[/yellow]")
+                    console.print(f"[yellow]↻ Retrying... (attempt {start_attempts})[/yellow]")
+                    await asyncio.sleep(2)
+                except Exception as e:
+                    console.print(f"[yellow]⚠️  Error: {str(e)}[/yellow]")
+                    console.print(f"[yellow]Retrying in 3 seconds... (attempt {start_attempts + 1})[/yellow]")
+                    await asyncio.sleep(3)
+                    start_attempts += 1
+            
             console.print(f"[dim]File ID: {file_id}[/dim]")
             
             # ✅ USE BACKEND'S DYNAMIC CHUNK SIZE (like send command)
@@ -1532,9 +1553,17 @@ def sendroom(
                 total_chunks = (file_size + chunk_size - 1) // chunk_size
                 console.print(f"[dim]Total chunks: {total_chunks}[/dim]")
             
-            # Upload chunks with progress bar
+            # Upload chunks with progress bar and network resilience
+            console.print(f"\n[cyan]📦 Uploading {total_chunks} chunks...[/cyan]")
+            console.print(f"[dim]Network: Monitoring connection for auto-resume[/dim]")
+            # Upload chunks with progress bar and network resilience
+            console.print(f"\n[cyan]📦 Uploading {total_chunks} chunks...[/cyan]")
+            console.print(f"[dim]Network: Monitoring connection for auto-resume[/dim]")
             from rich.progress import Progress, BarColumn, TaskProgressColumn, TransferSpeedColumn, TimeRemainingColumn
             import hashlib
+            import httpx
+            
+            is_paused = False
             
             with Progress(
                 TextColumn("[bold blue]{task.fields[filename]}", justify="right"),
@@ -1556,16 +1585,64 @@ def sendroom(
                         chunk_data = f.read(chunk_size)
                         chunk_hash = hashlib.sha256(chunk_data).hexdigest()
                         
-                        await api_client.upload_chunk(
-                            room_id=matching_room["id"],
-                            file_id=file_id,
-                            chunk_number=chunk_num,
-                            total_chunks=total_chunks,
-                            chunk_data=chunk_data,
-                            chunk_hash=chunk_hash
-                        )
+                        # Infinite retry for network errors until success or Ctrl+C
+                        retry_delay = 2
+                        attempt = 0
                         
-                        progress.update(task_id, advance=len(chunk_data))
+                        while True:  # Continuous retry until success
+                            attempt += 1
+                            try:
+                                await api_client.upload_chunk(
+                                    room_id=matching_room["id"],
+                                    file_id=file_id,
+                                    chunk_number=chunk_num,
+                                    total_chunks=total_chunks,
+                                    chunk_data=chunk_data,
+                                    chunk_hash=chunk_hash
+                                )
+                                
+                                # Success - clear pause state
+                                if is_paused:
+                                    is_paused = False
+                                    console.print(f"\n[green]✓ Network restored - resuming upload[/green]")
+                                    progress.update(task_id, description=f"Uploading {file.name}")
+                                
+                                progress.update(task_id, advance=len(chunk_data))
+                                break
+                            
+                            except (httpx.ConnectError, httpx.NetworkError, httpx.TimeoutException,
+                                    httpx.ConnectTimeout, httpx.ReadTimeout) as e:
+                                if not is_paused:
+                                    console.print(f"\n[yellow]⚠️  Network unstable - checking connection...[/yellow]")
+                                    is_paused = True
+                                
+                                # Show paused state
+                                progress.update(task_id, description=f"[red]⏸️  PAUSED - Network disconnected (chunk {chunk_num}/{total_chunks})[/red]")
+                                console.print(f"[red]⏸️  Upload paused - Network disconnected[/red]")
+                                console.print(f"[yellow]Waiting for network... (will auto-resume when connected)[/yellow]")
+                                console.print(f"[dim]Press Ctrl+C to cancel[/dim]")
+                                
+                                await asyncio.sleep(retry_delay)
+                                continue
+                            
+                            except httpx.HTTPStatusError as e:
+                                if not is_paused:
+                                    console.print(f"\n[yellow]⚠️  Server error (HTTP {e.response.status_code}) - retrying...[/yellow]")
+                                    is_paused = True
+                                
+                                progress.update(task_id, description=f"[yellow]⏸️  Server issue - retrying chunk {chunk_num}/{total_chunks}[/yellow]")
+                                await asyncio.sleep(retry_delay)
+                                continue
+                            
+                            except Exception as e:
+                                if not is_paused:
+                                    console.print(f"\n[yellow]⚠️  Error: {str(e)}[/yellow]")
+                                    console.print(f"[yellow]Retrying chunk {chunk_num}...[/yellow]")
+                                    is_paused = True
+                                
+                                progress.update(task_id, description=f"[yellow]⏸️  Retrying chunk {chunk_num}/{total_chunks}[/yellow]")
+                                await asyncio.sleep(retry_delay)
+                                continue
             
             # Complete upload with verification progress
             from rich.progress import Progress, SpinnerColumn, TextColumn, TimeElapsedColumn
@@ -1626,11 +1703,13 @@ def sendroom(
         except Exception as e:
             import traceback
             error_msg = str(e) if str(e) else type(e).__name__
-            console.print(f"\n[red]✗ Failed to send file: {error_msg}[/red]")
-            # Only show traceback for unexpected errors
-            if "ReadTimeout" not in error_msg and "Connection" not in error_msg:
+            # Only log unexpected errors, don't exit - network errors are handled in the loop
+            if "KeyboardInterrupt" in str(type(e).__name__):
+                console.print(f"\n[yellow]⚠️  Upload cancelled by user[/yellow]")
+                raise typer.Exit(1)
+            else:
+                console.print(f"\n[red]✗ Unexpected error: {error_msg}[/red]")
                 console.print(f"[dim]Error type: {type(e).__name__}[/dim]")
-            raise typer.Exit(1)
         
         finally:
             await api_client.close()
