@@ -463,6 +463,7 @@ def inbox(range: str = typer.Argument("1-10", help="Message range (e.g., 1-10, m
         
         try:
             from rich.progress import Progress, SpinnerColumn, TextColumn
+            import asyncio
             
             with Progress(
                 SpinnerColumn(),
@@ -475,53 +476,68 @@ def inbox(range: str = typer.Argument("1-10", help="Message range (e.g., 1-10, m
                 rooms_response = await api_client.get_user_rooms()
                 rooms = rooms_response.get("rooms", [])
             
-            # Collect all file messages from all rooms
+            # Collect all file messages from all rooms with parallel fetching
             incoming_files = []
             
-            for room in rooms:
+            async def fetch_room_messages(room):
+                """Fetch messages from a single room with timeout"""
                 room_id = room["id"]
                 room_name = room.get("name", room_id[:8])
                 
                 try:
-                    # Get messages (limit 200 for pagination)
-                    messages_response = await api_client.get_room_messages(room_id, limit=200)
+                    # 30s timeout (some rooms have many messages and take time to query)
+                    messages_response = await asyncio.wait_for(
+                        api_client.get_room_messages(room_id, limit=15),  # Only fetch 15 since we display 10 max
+                        timeout=30.0
+                    )
                     messages = messages_response.get("messages", [])
+                    
+                    # Filter file messages (type can be "file" or "image")
+                    files = []
+                    for msg in messages:
+                        if msg["message_type"] in ["file", "image"] and msg.get("file_name"):
+                            # Only show files from other users (not self-sent)
+                            if msg["sender_id"] != config.get_user_id():
+                                # Check for blockchain fields with fallback
+                                blockchain_tx = msg.get("blockchain_tx_hash")
+                                if not blockchain_tx:
+                                    blockchain_tx = msg.get("blockchain_hash") or msg.get("tx_hash")
+                                
+                                files.append({
+                                    "message_id": msg["id"],
+                                    "sender": msg["sender_username"],
+                                    "filename": msg.get("file_name", "Unknown"),
+                                    "size": msg.get("file_size", 0),
+                                    "file_hash": msg.get("file_hash"),
+                                    "ipfs_cid": msg.get("ipfs_cid"),
+                                    "blockchain_tx": blockchain_tx,
+                                    "created_at": msg["created_at"],
+                                    "room_name": room_name,
+                                    "room_type": room.get("type", "unknown"),
+                                    "room_id": room_id
+                                })
+                    return files
+                    
+                except asyncio.TimeoutError:
+                    import sys
+                    print(f"⚠️ Warning: Skipped room '{room_name}' (timed out after 3s)", file=sys.stderr)
+                    return []
                 except Exception as e:
-                    # Check for auth errors - don't skip these silently
+                    # Check for auth errors - propagate these
                     error_str = str(e)
                     if "401" in error_str or "Unauthorized" in error_str or "403" in error_str or "Forbidden" in error_str:
-                        # Auth error - propagate up to show proper error message
                         raise
-                    # Skip rooms that timeout or have other errors (but log them)
                     import sys
-                    import traceback
-                    print(f"⚠️ Warning: Skipped room '{room_name}' due to error: {e.__class__.__name__}: {e}", file=sys.stderr)
-                    # traceback.print_exc(file=sys.stderr)  # Uncomment for debugging
-                    continue
-                
-                # Filter file messages (type can be "file" or "image")
-                for msg in messages:
-                    if msg["message_type"] in ["file", "image"] and msg.get("file_name"):
-                        # Only show files from other users (not self-sent)
-                        if msg["sender_id"] != config.get_user_id():
-                            # Check for blockchain fields with fallback
-                            blockchain_tx = msg.get("blockchain_tx_hash")
-                            if not blockchain_tx:
-                                blockchain_tx = msg.get("blockchain_hash") or msg.get("tx_hash")
-                            
-                            incoming_files.append({
-                                "message_id": msg["id"],
-                                "sender": msg["sender_username"],
-                                "filename": msg.get("file_name", "Unknown"),
-                                "size": msg.get("file_size", 0),
-                                "file_hash": msg.get("file_hash"),
-                                "ipfs_cid": msg.get("ipfs_cid"),
-                                "blockchain_tx": blockchain_tx,
-                                "created_at": msg["created_at"],
-                                "room_name": room_name,
-                                "room_type": room.get("type", "unknown"),
-                                "room_id": room_id
-                            })
+                    print(f"⚠️ Warning: Skipped room '{room_name}' due to error: {e.__class__.__name__}", file=sys.stderr)
+                    return []
+            
+            # Fetch all rooms in parallel (much faster)
+            results = await asyncio.gather(*[fetch_room_messages(room) for room in rooms], return_exceptions=True)
+            
+            # Combine results
+            for result in results:
+                if isinstance(result, list):
+                    incoming_files.extend(result)
             
             if not incoming_files:
                 console.print("\n[yellow]📭 No incoming files[/yellow]")
@@ -672,6 +688,7 @@ def outbox(range: str = typer.Argument("1-10", help="Message range (e.g., 1-10, 
         
         try:
             from rich.progress import Progress, SpinnerColumn, TextColumn
+            import asyncio
             
             with Progress(
                 SpinnerColumn(),
@@ -684,11 +701,12 @@ def outbox(range: str = typer.Argument("1-10", help="Message range (e.g., 1-10, 
                 rooms_response = await api_client.get_user_rooms()
                 rooms = rooms_response.get("rooms", [])
             
-            # Collect all file messages sent by current user
+            # Collect all file messages sent by current user with parallel fetching
             sent_files = []
             current_user_id = config.get_user_id()
             
-            for room in rooms:
+            async def fetch_room_sent_messages(room):
+                """Fetch sent messages from a single room with timeout"""
                 room_id = room["id"]
                 room_name = room.get("name", "Unknown")
                 room_type = room.get("type", "direct")
@@ -702,44 +720,57 @@ def outbox(range: str = typer.Argument("1-10", help="Message range (e.g., 1-10, 
                         break
                 
                 try:
-                    # Get messages (limit 200 to allow pagination)
-                    messages_response = await api_client.get_room_messages(room_id, limit=200)
+                    # 30s timeout (some rooms have many messages and take time to query)
+                    messages_response = await asyncio.wait_for(
+                        api_client.get_room_messages(room_id, limit=15),  # Only fetch 15 since we display 10 max
+                        timeout=30.0
+                    )
                     messages = messages_response.get("messages", [])
+                    
+                    # Filter file messages sent by current user
+                    files = []
+                    for msg in messages:
+                        if msg["message_type"] in ["file", "image"] and msg.get("file_name") and msg["sender_id"] == current_user_id:
+                            # Check for blockchain fields with fallback
+                            blockchain_tx = msg.get("blockchain_tx_hash")
+                            if not blockchain_tx:
+                                blockchain_tx = msg.get("blockchain_hash") or msg.get("tx_hash")
+                            
+                            files.append({
+                                "message_id": msg["id"],
+                                "room_id": room_id,
+                                "room_type": room_type,
+                                "room_name": room_name,
+                                "recipient_username": recipient_username,
+                                "filename": msg.get("file_name", "Unknown"),
+                                "size": msg.get("file_size", 0),
+                                "file_hash": msg.get("file_hash"),
+                                "ipfs_cid": msg.get("ipfs_cid"),
+                                "blockchain_tx": blockchain_tx,
+                                "created_at": msg["created_at"]
+                            })
+                    return files
+                    
+                except asyncio.TimeoutError:
+                    import sys
+                    print(f"⚠️ Warning: Skipped room '{room_name}' (timed out after 3s)", file=sys.stderr)
+                    return []
                 except Exception as e:
-                    # Check for auth errors - don't skip these silently
+                    # Check for auth errors - propagate these
                     error_str = str(e)
                     if "401" in error_str or "Unauthorized" in error_str or "403" in error_str or "Forbidden" in error_str:
-                        # Auth error - propagate up to show proper error message
                         raise
-                    # Skip rooms that timeout or have other errors (but log them)
                     import sys
-                    import traceback
-                    print(f"⚠️ Warning: Skipped room '{room_name}' due to error: {e.__class__.__name__}: {e}", file=sys.stderr)
-                    # traceback.print_exc(file=sys.stderr)  # Uncomment for debugging
-                    continue
-                
-                # Filter file messages sent by current user (type can be "file" or "image")
-                for msg in messages:
-                    if msg["message_type"] in ["file", "image"] and msg.get("file_name") and msg["sender_id"] == current_user_id:
-                        # Check for blockchain fields with fallback
-                        blockchain_tx = msg.get("blockchain_tx_hash")
-                        if not blockchain_tx:
-                            # Try alternate field names
-                            blockchain_tx = msg.get("blockchain_hash") or msg.get("tx_hash")
-                        
-                        sent_files.append({
-                            "message_id": msg["id"],
-                            "room_id": room_id,
-                            "room_type": room_type,
-                            "room_name": room_name,
-                            "recipient_username": recipient_username,
-                            "filename": msg.get("file_name", "Unknown"),
-                            "size": msg.get("file_size", 0),
-                            "file_hash": msg.get("file_hash"),
-                            "ipfs_cid": msg.get("ipfs_cid"),
-                            "blockchain_tx": blockchain_tx,
-                            "created_at": msg["created_at"]
-                        })
+                    print(f"⚠️ Warning: Skipped room '{room_name}' due to error: {e.__class__.__name__}", file=sys.stderr)
+                    return []
+            
+            # Fetch all rooms in parallel (much faster)
+            results = await asyncio.gather(*[fetch_room_sent_messages(room) for room in rooms], return_exceptions=True)
+            
+            # Combine results
+            for result in results:
+                if isinstance(result, list):
+                    sent_files.extend(result)
             
             if not sent_files:
                 console.print("\n[yellow]📭 No sent files[/yellow]")

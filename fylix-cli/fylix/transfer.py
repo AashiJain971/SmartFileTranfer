@@ -26,12 +26,17 @@ class FileTransferManager:
         self.pause_reason = ""
     
     async def check_network_connectivity(self) -> bool:
-        """Check if network is available by trying to reach backend"""
+        """Check if network is available using socket-level test (no HTTP caching)"""
         try:
-            # Try to ping the backend server with short timeout
-            async with httpx.AsyncClient(timeout=3.0) as client:
-                response = await client.get(f"{api_client.base_url}/")
-                return True
+            # Socket-level test - directly check if we can connect to Google DNS
+            # This bypasses HTTP caching and detects actual network availability
+            import socket
+            sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            sock.settimeout(2)
+            # Try to connect to Google's DNS (8.8.8.8) on port 53
+            result = sock.connect_ex(('8.8.8.8', 53))
+            sock.close()
+            return result == 0  # 0 means connection successful
         except:
             return False
     
@@ -256,6 +261,23 @@ class FileTransferManager:
                     
                     while True:  # Continuous retry until success
                         attempt += 1
+                        
+                        # CHECK NETWORK BEFORE UPLOAD ATTEMPT (critical for WiFi toggle detection)
+                        network_available = await self.check_network_connectivity()
+                        if not network_available:
+                            # Network is down - show pause message IMMEDIATELY
+                            if not self.is_paused:
+                                console.print(f"\n[red]⏸️  Network disconnected - pausing upload[/red]")
+                                self.is_paused = True
+                            
+                            progress.update(task, description=f"[red]⏸️  PAUSED - No network (chunk {chunk_num}/{total_chunks})[/red]")
+                            console.print(f"[yellow]Waiting for network... (will auto-resume when connected)[/yellow]")
+                            console.print(f"[dim]Press Ctrl+C to cancel[/dim]")
+                            
+                            await asyncio.sleep(3)  # Wait before rechecking
+                            continue  # Recheck network
+                        
+                        # Network is available - attempt upload
                         try:
                             await api_client.upload_chunk(
                                 room_id=room_id,
@@ -374,18 +396,51 @@ class FileTransferManager:
             console.print(f"\n[cyan]🔐 Cryptographic Hash (SHA-256):[/cyan]")
             console.print(f"[green]{file_hash}[/green]")
             
-            # Wait for IPFS and Blockchain processing (they may take a few seconds)
+            # Wait for IPFS and Blockchain processing with infinite retry (CRITICAL - data security)
             if not ipfs_cid or not blockchain_tx:
-                console.print(f"\n[yellow]⏳ Waiting for IPFS and Blockchain processing...[/yellow]")
-                await asyncio.sleep(2)  # Give backend time to process
+                console.print(f"\n[yellow]⏳ Waiting for IPFS and Blockchain verification...[/yellow]")
+                console.print(f"[dim]This ensures your file is cryptographically secured and distributed[/dim]")
                 
-                # Try to fetch blockchain proof
-                try:
-                    blockchain_data = await api_client.get_blockchain_proof(file_hash)
-                    ipfs_cid = blockchain_data.get('ipfs_cid') or ipfs_cid
-                    blockchain_tx = blockchain_data.get('tx_hash') or blockchain_tx
-                except:
-                    pass  # It's ok if not ready yet
+                retry_count = 0
+                max_wait = 120  # Maximum 2 minutes of waiting
+                
+                while (not ipfs_cid or not blockchain_tx) and retry_count < max_wait:
+                    retry_count += 1
+                    await asyncio.sleep(2)  # Check every 2 seconds
+                    
+                    # Try to fetch blockchain proof with network retry
+                    while True:
+                        try:
+                            blockchain_data = await api_client.get_blockchain_proof(file_hash)
+                            ipfs_cid = blockchain_data.get('ipfs_cid') or ipfs_cid
+                            blockchain_tx = blockchain_data.get('tx_hash') or blockchain_tx
+                            break  # Success
+                        except (httpx.ConnectError, httpx.NetworkError, httpx.TimeoutException) as e:
+                            # Network error during verification fetch
+                            network_available = await self.check_network_connectivity()
+                            if not network_available:
+                                console.print(f"[red]⏸️  Network disconnected while verifying - waiting...[/red]")
+                                await asyncio.sleep(3)
+                                continue  # Retry network check
+                            else:
+                                await asyncio.sleep(1)
+                                continue  # Retry fetch
+                        except Exception:
+                            break  # Other errors, continue waiting loop
+                    
+                    # Show progress every 10 seconds
+                    if retry_count % 5 == 0:
+                        status = []
+                        if not blockchain_tx:
+                            status.append("blockchain pending")
+                        if not ipfs_cid:
+                            status.append("IPFS pending")
+                        console.print(f"[yellow]Still waiting: {', '.join(status)}... ({retry_count*2}s)[/yellow]")
+                    
+                    # Check if both are ready
+                    if ipfs_cid and blockchain_tx:
+                        console.print(f"[green]✓ Verification complete![/green]")
+                        break
             
             if blockchain_tx:
                 console.print(f"\n[cyan]⛓️  Blockchain Proof:[/cyan]")
@@ -467,17 +522,28 @@ class FileTransferManager:
         
         while file_data is None:
             download_attempt += 1
+            
+            # CHECK NETWORK BEFORE DOWNLOAD ATTEMPT (critical for WiFi toggle detection)
+            network_available = await self.check_network_connectivity()
+            if not network_available:
+                # Network is down - show pause message IMMEDIATELY
+                if download_attempt == 1 or download_attempt % 5 == 0:  # Show every 5 attempts to avoid spam
+                    console.print(f"[red]⏸️  Network disconnected - pausing download[/red]")
+                    console.print(f"[yellow]Waiting for network... (will auto-resume when connected)[/yellow]")
+                    console.print(f"[dim]Press Ctrl+C to cancel[/dim]")
+                await asyncio.sleep(3)  # Wait before rechecking
+                continue  # Recheck network
+            
+            # Network is available - attempt download
             try:
                 file_data = await api_client.download_file(message_id)
                 if download_attempt > 1:
-                    console.print(f"[green]✓ Download successful after {download_attempt} attempts[/green]")
+                    console.print(f"[green]✓ Network restored - download successful after {download_attempt} attempts[/green]")
             except (httpx.ConnectError, httpx.NetworkError, httpx.TimeoutException,
                     httpx.ConnectTimeout, httpx.ReadTimeout) as e:
                 console.print(f"[yellow]⚠️  Network error during download (attempt {download_attempt})[/yellow]")
-                console.print(f"[red]⏸️  Download paused - Network disconnected[/red]")
-                console.print(f"[yellow]Waiting for network... (will auto-resume when connected)[/yellow]")
-                console.print(f"[dim]Press Ctrl+C to cancel[/dim]")
-                await asyncio.sleep(3)
+                console.print(f"[yellow]Retrying...[/yellow]")
+                await asyncio.sleep(2)
             except httpx.HTTPStatusError as e:
                 console.print(f"[yellow]⚠️  Server error (HTTP {e.response.status_code}) - retrying...[/yellow]")
                 console.print(f"[yellow]Attempt {download_attempt}, retrying in 3 seconds...[/yellow]")

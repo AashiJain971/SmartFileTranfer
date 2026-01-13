@@ -849,7 +849,7 @@ class ChatCRUD:
                     result = supabase.table("messages")\
                         .select("id, room_id, sender_id, message_type, content, file_session_id, file_path, file_name, file_size, file_hash, reply_to_id, created_at, updated_at, blockchain_tx_hash, blockchain_block_number, ipfs_cid, certificate_url, sender:users(username)")\
                         .eq("room_id", room_id)\
-                        .order("created_at", desc=False)\
+                        .order("created_at", desc=True)\
                         .limit(limit)\
                         .offset(offset)\
                         .execute()
@@ -1099,6 +1099,37 @@ class ChatCRUD:
                     return None
             except Exception:
                 return None
+    
+    @staticmethod
+    async def get_message_statuses_batch(message_ids: list[str], user_id: str) -> dict[str, str]:
+        """Get message statuses for multiple messages in one query (solves N+1 problem)"""
+        if not message_ids:
+            return {}
+        
+        try:
+            async def fetch_statuses():
+                return supabase.table("message_status")\
+                    .select("message_id, status")\
+                    .in_("message_id", message_ids)\
+                    .eq("user_id", user_id)\
+                    .execute()
+            
+            result = await asyncio.wait_for(fetch_statuses(), timeout=10.0)
+            
+            # Create dict mapping message_id -> status
+            statuses = {}
+            if result.data:
+                for row in result.data:
+                    statuses[row["message_id"]] = row["status"]
+            
+            return statuses
+            
+        except (asyncio.TimeoutError, httpx.ReadTimeout, httpx.ConnectTimeout, httpx.TimeoutException):
+            print(f"⚠️ Timeout getting batch statuses for {len(message_ids)} messages, returning empty dict")
+            return {}
+        except Exception as e:
+            print(f"⚠️ Error getting batch statuses: {e}")
+            return {}
         
         return None
     

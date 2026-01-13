@@ -619,10 +619,14 @@ async def get_room_messages(
                 detail="Database query timed out. The room may have too many messages. Please try again."
             )
         
+        # Batch fetch all message statuses in one query (fixes N+1 problem)
+        message_ids = [msg["id"] for msg in messages_data]
+        statuses_dict = await ChatCRUD.get_message_statuses_batch(message_ids, current_user["id"])
+        
         messages = []
         for msg in messages_data:
-            # Get user's status for this message
-            status = await ChatCRUD.get_message_status(msg["id"], current_user["id"])
+            # Get status from batch-fetched dict
+            status = statuses_dict.get(msg["id"])
             
             # Convert reply_to if exists
             reply_to = None
