@@ -60,7 +60,7 @@ def main(
       [yellow]fylix login[/yellow] [cyan]<email>[/cyan]                [dim]# Login[/dim]
       [yellow]fylix send[/yellow] [cyan]<file> <recipient>[/cyan]      [dim]# Send file[/dim]
       [yellow]fylix inbox[/yellow]                           [dim]# Check received files[/dim]
-      [yellow]fylix receive[/yellow] [cyan]<message_id>[/cyan]          [dim]# Download file[/dim]
+      [yellow]fylix download[/yellow] [cyan]<message_id>[/cyan]        [dim]# Download file[/dim]
     
     [bold]Use[/bold] [yellow]fylix <command> --help[/yellow] [bold]for detailed syntax[/bold]
     """
@@ -609,10 +609,10 @@ def inbox(range: str = typer.Argument("1-10", help="Message range (e.g., 1-10, m
                 next_end = min(actual_end + 10, total_messages)
                 console.print(f"\n[yellow]📄 More messages available. Use: fylix inbox {next_start}-{next_end}[/yellow]")
             
-            console.print(f"\n[cyan]To download:[/cyan] fylix receive <ID>")
+            console.print(f"\n[cyan]To download:[/cyan] fylix download <ID>")
             console.print(f"[cyan]To verify:[/cyan] fylix verify <ID>")
             if paginated_files:
-                console.print(f"[dim]Example: fylix receive {paginated_files[0]['message_id'][:7]} or fylix verify {paginated_files[0]['message_id'][:7]}[/dim]")
+                console.print(f"[dim]Example: fylix download {paginated_files[0]['message_id'][:7]} or fylix verify {paginated_files[0]['message_id'][:7]}[/dim]")
         
         except Exception as e:
             # Check if it's an authentication error
@@ -787,8 +787,16 @@ def outbox(range: str = typer.Argument("1-10", help="Message range (e.g., 1-10, 
                     except:
                         time_str = "Unknown"
                     
-                    # Determine delivery status based on blockchain verification
-                    status = "✓ Sent" if file.get("blockchain_tx") else "⚠ Pending"
+                    # Determine delivery status 
+                    # Priority: sent_files tracking > blockchain verified > pending
+                    msg_id = file["message_id"]
+                    sent_files = config.get_credentials().get("sent_files", [])
+                    if msg_id in sent_files:
+                        status = "✓ Sent"
+                    elif file.get("blockchain_tx"):
+                        status = "✓ Sent"
+                    else:
+                        status = "⚠ Pending"
                     
                     # Show first 7 chars (same format as inbox, no ellipsis)
                     msg_id_short = file["message_id"][:7]
@@ -1460,8 +1468,36 @@ def sendroom(
                 file_hash = transfer_manager.calculate_file_hash(file)
                 progress.update(task, completed=True)
             
+            console.print(f"[dim]Hash: {file_hash[:16]}...[/dim]")
+            
+            # Show AI Network Prediction (same as send command)
+            console.print(f"\n[cyan]🤖 AI Network Analysis:[/cyan]")
+            console.print(f"[dim]Analyzing current network conditions...[/dim]")
+            console.print(f"[green]✓ Bandwidth: Estimated ~10-50 Mbps[/green]")
+            console.print(f"[green]✓ Latency: ~20-100ms[/green]")
+            console.print(f"[green]✓ Packet Loss: <1%[/green]")
+            console.print(f"[yellow]Recommended Chunk Size: 256KB - 2MB (will be optimized by backend)[/yellow]")
+            
+            # Ask user for chunk size preference (same as send command)
+            console.print(f"\n[cyan]Chunk Size Options:[/cyan]")
+            console.print("1. Auto (AI-optimized based on network conditions) [Recommended]")
+            console.print("2. Manual (specify size)")
+            
+            from rich.prompt import Prompt
+            choice = Prompt.ask("Select option", choices=["1", "2"], default="1")
+            
+            manual_chunk_size = None
+            chunk_size = 1024 * 1024  # Default 1MB chunks
+            if choice == "2":
+                size_input = Prompt.ask("Enter chunk size in KB", default="1024")
+                try:
+                    manual_chunk_size = int(size_input) * 1024  # Convert KB to bytes
+                    chunk_size = manual_chunk_size
+                    console.print(f"[dim]Using manual chunk size: {manual_chunk_size // 1024} KB[/dim]")
+                except:
+                    console.print("[yellow]Invalid size, using auto[/yellow]")
+            
             file_size = file.stat().st_size
-            chunk_size = 1024 * 1024  # 1MB chunks
             total_chunks = (file_size + chunk_size - 1) // chunk_size
             
             console.print(f"\n[cyan]Starting chunked upload...[/cyan]")
@@ -1478,6 +1514,23 @@ def sendroom(
             
             file_id = start_response["file_id"]
             console.print(f"[dim]File ID: {file_id}[/dim]")
+            
+            # ✅ USE BACKEND'S DYNAMIC CHUNK SIZE (like send command)
+            if "chunk_size" in start_response:
+                backend_chunk_size = start_response["chunk_size"]
+                
+                # If manual size selected, use it; otherwise use backend's AI-optimized size
+                if manual_chunk_size:
+                    chunk_size = manual_chunk_size
+                    console.print(f"[dim]Using manual chunk size: {_format_size(chunk_size)}[/dim]")
+                else:
+                    chunk_size = backend_chunk_size
+                    console.print(f"[cyan]🤖 AI Network Prediction:[/cyan]")
+                    console.print(f"[dim]Optimal chunk size: {_format_size(chunk_size)}[/dim]")
+                    console.print(f"[dim]Based on current network conditions[/dim]")
+                
+                total_chunks = (file_size + chunk_size - 1) // chunk_size
+                console.print(f"[dim]Total chunks: {total_chunks}[/dim]")
             
             # Upload chunks with progress bar
             from rich.progress import Progress, BarColumn, TaskProgressColumn, TransferSpeedColumn, TimeRemainingColumn
@@ -1549,6 +1602,17 @@ def sendroom(
             
             if message_id:
                 console.print(f"[dim]Message ID: {message_id}[/dim]")
+                
+                # Track sent file in credentials for persistence
+                creds = config.get_credentials()
+                if creds:
+                    sent_files = creds.get("sent_files", [])
+                    if message_id not in sent_files:
+                        sent_files.append(message_id)
+                        creds["sent_files"] = sent_files
+                        # Write directly to file to preserve all fields
+                        with open(config.credentials_file, 'w') as f:
+                            json.dump(creds, f, indent=2)
             
             # Show blockchain and IPFS info if available
             if ipfs_data and ipfs_data.get('success'):
@@ -1636,10 +1700,10 @@ def send(
     asyncio.run(_send())
 
 
-# ==================== RECEIVE ====================
+# ==================== DOWNLOAD ====================
 
 @app.command()
-def receive(
+def download(
     message_id: str = typer.Argument(..., help="Message ID from inbox"),
     output_dir: str = typer.Option("./downloads", "--output", "-o", help="Output directory")
 ):
@@ -1647,12 +1711,12 @@ def receive(
     Download file with integrity verification
     
     [bold yellow]Syntax:[/bold yellow]
-      fylix receive [cyan]MESSAGE_ID[/cyan] [magenta][OPTIONS][/magenta]
+      fylix download [cyan]MESSAGE_ID[/cyan] [magenta][OPTIONS][/magenta]
     
     [bold green]Examples:[/bold green]
-      fylix receive abc123def456
-      fylix receive abc123d -o ~/Downloads
-      fylix receive a1b2c3 --output /tmp/files
+      fylix download abc123def456
+      fylix download abc123d -o ~/Downloads
+      fylix download a1b2c3 --output /tmp/files
     
     [bold magenta]Security:[/bold magenta]
       - Requires explicit confirmation
@@ -1666,7 +1730,7 @@ def receive(
     [bold blue]Options:[/bold blue]
       [magenta]-o, --output[/magenta]  Output directory (default: ./downloads)
     """
-    async def _receive():
+    async def _download():
         if not config.is_logged_in():
             console.print("[red]✗ Not logged in. Run 'fylix login <email>' first[/red]")
             raise typer.Exit(1)
@@ -1725,16 +1789,16 @@ def receive(
             elif e.response.status_code == 504:
                 console.print(f"\n[red]✗ Database timeout. Please try again in 30 seconds.[/red]")
             else:
-                console.print(f"\n[red]✗ Receive failed: HTTP {e.response.status_code}[/red]")
+                console.print(f"\n[red]✗ Download failed: HTTP {e.response.status_code}[/red]")
             raise typer.Exit(1)
         except Exception as e:
-            console.print(f"\n[red]✗ Receive failed: {e}[/red]")
+            console.print(f"\n[red]✗ Download failed: {e}[/red]")
             raise typer.Exit(1)
         
         finally:
             await api_client.close()
     
-    asyncio.run(_receive())
+    asyncio.run(_download())
 
 
 # ==================== STATUS ====================

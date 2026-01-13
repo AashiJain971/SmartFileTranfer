@@ -285,6 +285,19 @@ class FileTransferManager:
                 blockchain_tx_hash=blockchain_tx
             )
             
+            # Track sent file in credentials for persistence
+            if message_id:
+                creds = config.get_credentials()
+                if creds:
+                    sent_files = creds.get("sent_files", [])
+                    if message_id not in sent_files:
+                        sent_files.append(message_id)
+                        creds["sent_files"] = sent_files
+                        # Write directly to file to preserve all fields
+                        import json
+                        with open(config.credentials_file, 'w') as f:
+                            json.dump(creds, f, indent=2)
+            
             return transfer_id
         
         except Exception as e:

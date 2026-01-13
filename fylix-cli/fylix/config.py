@@ -23,13 +23,20 @@ class Config:
     
     def save_credentials(self, email: str, access_token: str, refresh_token: str, user_id: str, username: str):
         """Store authentication credentials locally"""
+        # Preserve existing downloaded_files and sent_files if they exist
+        existing_creds = self.get_credentials()
+        downloaded_files = existing_creds.get("downloaded_files", []) if existing_creds else []
+        sent_files = existing_creds.get("sent_files", []) if existing_creds else []
+        
         credentials = {
             "email": email,
             "user_id": user_id,
             "username": username,
             "access_token": access_token,
             "refresh_token": refresh_token,
-            "logged_in_at": datetime.utcnow().isoformat()
+            "logged_in_at": datetime.utcnow().isoformat(),
+            "downloaded_files": downloaded_files,
+            "sent_files": sent_files
         }
         
         with open(self.credentials_file, 'w') as f:
